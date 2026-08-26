@@ -192,6 +192,27 @@ func (f *ServerFlags) Resolve() (*jfclient.Client, error) {
 	return jfclient.New(url, token, user, password, insecure), nil
 }
 
+// PeekURL resolves just the base URL - flags > saved profile > env vars,
+// the same priority order Resolve uses - without requiring credentials.
+// Returns "" if no URL is configured anywhere. Useful for anything cosmetic
+// that wants the target instance's URL (e.g. naming an output directory
+// after it) even when a full client isn't being built; callers that need a
+// real error for a missing/invalid profile should use Resolve instead.
+func (f *ServerFlags) PeekURL() string {
+	url := f.URL
+	if url == "" && f.Server != "" {
+		if store, err := Load(DefaultPath()); err == nil {
+			if srv, ok := store.Servers[f.Server]; ok {
+				url = srv.URL
+			}
+		}
+	}
+	if url == "" {
+		url = firstNonEmptyEnv("JFPS_"+envSuffix(f.prefix)+"URL", "JFPS_URL")
+	}
+	return url
+}
+
 func firstNonEmptyEnv(names ...string) string {
 	for _, n := range names {
 		if v := os.Getenv(n); v != "" {

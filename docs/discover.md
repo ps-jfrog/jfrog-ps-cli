@@ -31,6 +31,29 @@ invocation always picks up whatever `--repos`/`--instance` just wrote.
 | [`--analyze`](#--analyze) | Turn `--repos-csv` (+ `--instance-json` if present) into a self-contained interactive HTML audit → `--audit-html` |
 | `--all` | Shorthand for all four together |
 
+**Output paths:** `--repos-csv`/`--policies-csv`/`--instance-json`/`--audit-html`
+each default to a path under `--output` (default `output`), in a subfolder
+named after the JPD's hostname prefix — e.g. `jfps discover --all --url
+https://psazuse.jfrog.io ...` writes `output/psazuse/report.csv`,
+`output/psazuse/policies.csv`, `output/psazuse/instance.json`, and
+`output/psazuse/audit.html`. This keeps repeated runs against different
+instances from overwriting each other's reports. Passing any of the four
+path flags explicitly overrides that default entirely for that one file
+(ignoring `--output`), so `--repos-csv myreport.csv` still just writes
+`myreport.csv` in the current directory, exactly as before. A bare IP host
+(no dot-separated hostname to take a prefix from) uses the full IP instead;
+if no URL is configured at all (e.g. an `--analyze`-only run with no
+`--url`/`--server`/env var), the subfolder is named `default`.
+
+**Concurrency:** `--repos`, `--policies`, and `--instance` run concurrently
+by default whenever more than one is selected (e.g. `--all`) — they're
+independent network calls against the same JPD, so this meaningfully cuts
+total run time. Live `\r`-based progress bars are suppressed while running
+concurrently (multiple bars updating the same terminal line at once would
+garble it); pass `--parallel=false` to run them one at a time instead, with
+full progress bars restored. `--analyze` always runs last regardless, since
+it depends on the others' output.
+
 Artifactory tracks neither a repo's own creation time nor a "last activity"
 field, and has no reverse "which cleanup policy applies to this repo" or
 "which policy applies to this project" lookup — `--repos`/`--policies`/
@@ -54,7 +77,7 @@ expression, and full retention criteria (days *and* months variants, plus
 keep-last-N-versions) — `|`-joined when a repo matches more than one policy.
 
 **Key flags:**
-- `--repos-csv` (default `report.csv`) — output path
+- `--repos-csv` (default `<output>/<instance>/report.csv`, see "Output paths" above) — output path
 - `--concurrency` (default `8`) — repos processed in parallel; keep modest on shared instances
 - `--cleanup-policies` (default `true`) — include the policy-detail columns (one extra API call)
 - `--include` / `--exclude` — comma-separated glob patterns to scope a run
@@ -91,7 +114,7 @@ row per repo × matched policy (or a blank-policy row when nothing matches) —
 useful for spotting ambiguous or overlapping cleanup-policy coverage that a
 single joined column would hide.
 
-**Key flags:** `--policies-csv` (default `policies.csv`) — output path
+**Key flags:** `--policies-csv` (default `<output>/<instance>/policies.csv`, see "Output paths" above) — output path
 
 **Safety notes:** none (read-only, no AQL calls — just the two list endpoints)
 
@@ -150,7 +173,7 @@ hundreds of projects, a routinely-404 sub-endpoint would otherwise flood the
 report with near-duplicate lines.
 
 **Key flags:**
-- `--instance-json` (default `instance.json`) — output path
+- `--instance-json` (default `<output>/<instance>/instance.json`, see "Output paths" above) — output path
 - `--concurrency` (default `8`) — permission-target/federated-repo/project-detail fetches
 - `--max-users` / `--max-groups` / `--max-permissions` (defaults `5000`/`5000`/`2000`) — caps with an explicit truncation warning if hit, never a silent one
 - `--project-detail` (default `true`) — fetch each project's roles/environments/members too (2-4 extra calls per project; disable on an instance with a very large number of projects)
@@ -210,7 +233,33 @@ With just a repos CSV, the report is a single "Repos" view: summary stats,
 clickable findings, and a searchable/filterable repo explorer with a per-repo
 detail drawer.
 
-An instance snapshot adds eight more tabs:
+An instance snapshot adds eight more tabs, in this order - Overview (the
+default active tab whenever one is present; Repos is the default only
+without instance data), then Repos, Projects, Access, Federation &
+Replication, Platform Config, Xray, All Findings, Relationships. The
+instance's URL is also shown top-right in the report header (linking to the
+real JPD) whenever instance data is present.
+- **Overview** — the instance's name and URL, component versions, storage
+  summary, an "Environment counts" section (projects, repositories, users,
+  groups, permission targets, federated repos, replication configs, global
+  roles - the instance's shape at a glance), authentication methods, and a
+  highlighted callout for repository signing keys if any are configured
+- **Projects** — searchable table with each project's repo count (cross-reference
+  against the Repos tab's `project_key` column to see exactly which repos —
+  including ones with no project, `project_key` `"default"` — belong where);
+  click a row to see that project's repos, roles, environments, and members
+  in full
+- **Access** — searchable Users, Groups, and Permission Targets tables (the
+  last showing repo scope plus user/group grants)
+- **Federation & Replication** — federated repos' member config, and every
+  configured replication
+- **Platform Config** — global roles/environments/tokens, certificates,
+  signing keys (pair name, type, alias only - never key material), property
+  sets, proxies, backups, archive cleanup policies, workers, webhooks, plus
+  singleton config (mail server, password/lockout policy, reverse proxy,
+  license, trash retention)
+- **Xray** — policies, watches, ignore rules, curation policies, and system
+  settings (shows a plain notice instead if Xray isn't licensed)
 - **All Findings** — every flagged resource, of any type, in one searchable
   table: `resource_type`, `resource_name`, `finding`, `detail`. Combines the
   Repos tab's per-repo findings with new cross-resource findings:
@@ -222,14 +271,6 @@ An instance snapshot adds eight more tabs:
   not active), `no-rules` (an Xray policy with no rules, so it can't act
   even if assigned to a watch). This is the tab to open first for "what's
   wrong across the whole environment."
-- **Overview** — component versions, storage summary, authentication methods,
-  and a highlighted callout for repository signing keys if any are configured
-- **Access** — searchable Users, Groups, and Permission Targets tables (the
-  last showing repo scope plus user/group grants)
-- **Projects** — searchable table with each project's repo count (cross-reference
-  against the Repos tab's `project_key` column to see exactly which repos —
-  including ones with no project, `project_key` `"default"` — belong where);
-  click a row to see that project's roles/environments/members in full
 - **Relationships** — a project-to-repo view: pick "Global" or a project from
   the dropdown (a search box beside it narrows the project list, since an
   instance can have hundreds) and see that project's repos; anything with no
@@ -238,14 +279,6 @@ An instance snapshot adds eight more tabs:
   the full list. This is the direct answer to "which repos belong to this
   project" — the Projects tab's row-click drawer shows the same repo list as
   raw JSON, this tab is the visual/browsable version of it
-- **Federation & Replication** — federated repos' member config, and every
-  configured replication
-- **Platform Config** — global roles/environments/tokens, certificates,
-  property sets, proxies, backups, archive cleanup policies, workers,
-  webhooks, plus singleton config (mail server, password/lockout policy,
-  reverse proxy, license, trash retention)
-- **Xray** — policies, watches, ignore rules, curation policies, and system
-  settings (shows a plain notice instead if Xray isn't licensed)
 
 Findings on the Repos tab: `empty` (zero files), `stale` (no push/pull inside
 `--stale-days`, or none recorded despite having files), `huge` /
@@ -258,9 +291,9 @@ intentional). A finding whose source column is missing from the repos CSV
 mis-flagged.
 
 **Key flags:**
-- `--repos-csv` (default `report.csv`) — input; errors clearly if missing
-- `--instance-json` (default `instance.json`) — input if present, silently skipped (repos-only report) if not
-- `--audit-html` (default `audit.html`) — output path
+- `--repos-csv` (default `<output>/<instance>/report.csv`, see "Output paths" above) — input; errors clearly if missing
+- `--instance-json` (default `<output>/<instance>/instance.json`, see "Output paths" above) — input if present, silently skipped (repos-only report) if not
+- `--audit-html` (default `<output>/<instance>/audit.html`, see "Output paths" above) — output path
 - `--stale-days` (default `180`), `--huge-gb` (default `500`),
   `--massive-files` (default `500000`), `--long-name-chars` (default `40`)
 

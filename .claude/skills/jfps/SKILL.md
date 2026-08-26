@@ -113,10 +113,20 @@ jfps discover --repos --instance --analyze --url ... --token ...
 jfps discover --all --url ... --token ...
 ```
 
-Flags always run in this fixed order regardless of the order you pass them:
-**`--repos` → `--policies` → `--instance` → `--analyze`** — so `--analyze`
-in the same invocation picks up whatever `--repos`/`--instance` just wrote
-(via `--repos-csv`/`--instance-json`, both with sane defaults).
+`--repos`/`--policies`/`--instance` run **concurrently** by default when more
+than one is selected (independent network calls against the same JPD -
+`--parallel=false` for sequentially, with full progress bars back instead of
+the suppressed-while-concurrent ones); `--analyze` always runs last, so it
+picks up whatever `--repos`/`--instance` just wrote (via
+`--repos-csv`/`--instance-json`, both with sane defaults).
+
+**Output paths:** left at their defaults, `--repos-csv`/`--policies-csv`/
+`--instance-json`/`--audit-html` all land under `--output` (default
+`output`), in a subfolder named after the JPD's hostname prefix - e.g.
+`--url https://psazuse.jfrog.io` writes `output/psazuse/report.csv`, so
+repeated runs against different instances never collide. Passing any of
+those four flags explicitly overrides that one path completely, ignoring
+`--output` for it.
 
 **Output format choice, and why:** `--repos`/`--policies` write **CSV** (flat
 per-row data — opens directly in Excel/Sheets, and it's what `--analyze`
@@ -145,22 +155,28 @@ jfps discover --analyze --repos-csv report.csv --instance-json instance.json --a
 ```
 
 `--analyze` works with just a repos CSV (a single "Repos" tab: findings +
-explorer). Adding an instance snapshot adds eight more tabs: **All
-Findings** (every flagged resource, of any type, in one searchable table —
-open this one first), Overview (versions, storage, auth methods, a
-**highlighted callout if repository signing keys are configured** —
-metadata only, never key material), Access (searchable
-Users/Groups/Permission-Targets tables), Projects (repo counts; click a
-row for roles/environments/members), **Relationships** (project-to-repo
-view: pick Global or a project, with a search box to narrow the project
-list — a hub-and-spoke SVG diagram plus a full searchable table of that
-project's repos, or every repo with no project for Global; the direct
-answer to "which repos belong to this project"), Federation & Replication, Platform
-Config (roles/tokens/certificates/property-sets/proxies/backups/
-archive-cleanup-policies/workers/webhooks, plus mail-server/password-policy/
-lockout-policy/reverse-proxy/license/trash-retention as stat cards), and
-Xray (policies/watches/ignore-rules/curation policies/settings — shows a
-plain notice instead if Xray isn't licensed).
+explorer). Adding an instance snapshot adds eight more tabs, in this order,
+with **Overview as the default active tab** (Repos is the default only
+without instance data) and the instance's URL shown top-right in the report
+header: Overview (the instance's name and URL, versions, storage, an
+**Environment counts** section - projects, repos, users, groups, permission
+targets, federated repos, replication configs, global roles - plus auth
+methods and a **highlighted callout if repository signing keys are
+configured**, metadata only, never key material), then Repos, Projects
+(repo counts; click a row for repos/roles/environments/members), Access (searchable
+Users/Groups/Permission-Targets tables), Federation & Replication, Platform
+Config (roles/tokens/certificates/**signing keys**/property-sets/proxies/
+backups/archive-cleanup-policies/workers/webhooks, plus mail-server/
+password-policy/lockout-policy/reverse-proxy/license/trash-retention as
+stat cards), Xray (policies/watches/ignore-rules/curation policies/settings
+— shows a plain notice instead if Xray isn't licensed), **All Findings**
+(every flagged resource, of any type, in one searchable table — open this
+one first for "what's wrong across the whole environment"), and
+**Relationships** (project-to-repo view: pick Global or a project, with a
+search box to narrow the project list — a hub-and-spoke SVG diagram plus a
+full searchable table of that project's repos, or every repo with no
+project for Global; the direct answer to "which repos belong to this
+project").
 
 `--repos` findings (computed by `--analyze`, each skipped rather than
 mis-flagged if its source column is absent): `empty`, `stale` (no

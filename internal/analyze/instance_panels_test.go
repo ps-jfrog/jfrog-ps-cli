@@ -11,6 +11,8 @@ import (
 
 func testSnapshot() *instance.Snapshot {
 	return &instance.Snapshot{
+		URL:  "https://psazuse.jfrog.io",
+		Name: "psazuse",
 		System: instance.SystemInfo{
 			ArtifactoryVersion: "7.165.0", ArtifactoryRevision: "865",
 			XrayAvailable: true, XrayVersion: "3.152.6",
@@ -23,7 +25,7 @@ func testSnapshot() *instance.Snapshot {
 		Users:        []instance.User{{Username: "alice", Realm: "internal"}},
 		Groups:       []instance.Group{{Name: "team-a"}},
 		Permissions:  []instance.PermissionTarget{{Name: "p1", Repos: []string{"docker-local"}}},
-		Projects:     []instance.Project{{Key: "team-a", DisplayName: "Team A", RepoCount: 2}},
+		Projects:     []instance.Project{{Key: "team-a", DisplayName: "Team A", RepoCount: 2, Repos: []string{"r1", "r2"}}},
 		Replications: []instance.ReplicationConfig{{RepoKey: "libs-release-local", Enabled: true}},
 		FederatedRepos: []instance.FederatedRepo{
 			{RepoKey: "fed-repo", Members: []instance.FederationMember{{URL: "https://x/artifactory/fed-repo", Enabled: true}}},
@@ -67,9 +69,12 @@ func TestRender_WithInstance_AddsTabsAndPanels(t *testing.T) {
 		`mountTable("access-users"`, `mountTable("access-groups"`, `mountTable("access-permissions"`,
 		`mountTable("projects-table"`, `mountTable("federation-table"`, `mountTable("replication-table"`,
 		`mountTable("platform-roles"`, `mountTable("platform-tokens"`, `mountTable("platform-webhooks"`,
-		`mountTable("xray-policies"`, `mountTable("xray-watches"`, `mountTable("all-findings-table"`,
+		`mountTable("platform-signing-keys"`, `mountTable("xray-policies"`, `mountTable("xray-watches"`, `mountTable("all-findings-table"`,
 		`id="rel-project-search"`, `id="rel-select"`, `id="rel-summary"`, `id="rel-diagram"`, `mountTable("rel-table"`, "REL_DATA",
+		"<h2>Environment counts</h2>", `"repos":["r1","r2"]`,
 		"7.165.0", "3.152.6", "github", "alice", "team-a", "libs-release-local", "fed-repo",
+		`<h2>Instance</h2>`, `<strong>psazuse</strong>`,
+		`class="header-instance" href="https://psazuse.jfrog.io"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("expected output to contain %q, it did not", want)
@@ -78,6 +83,38 @@ func TestRender_WithInstance_AddsTabsAndPanels(t *testing.T) {
 
 	if strings.Count(html, "</script>") < 10 {
 		t.Fatalf("expected at least 10 </script> tags (shared helpers + main + mounted tables + relationships), got %d", strings.Count(html, "</script>"))
+	}
+
+	if !strings.Contains(html, `<button class="report-tab active" data-report-tab="overview">`) {
+		t.Error("expected Overview to be the default active tab when instance data is present")
+	}
+	if strings.Contains(html, `<button class="report-tab active" data-report-tab="repos">`) {
+		t.Error("expected Repos to NOT be the default active tab when instance data is present")
+	}
+	if !strings.Contains(html, `<section class="report-panel active" data-report-panel="overview">`) {
+		t.Error("expected the Overview panel to have the active class")
+	}
+	if strings.Contains(html, `<section class="report-panel active" data-report-panel="repos">`) {
+		t.Error("expected the Repos panel to NOT have the active class when instance data is present")
+	}
+
+	// Overview, Repos, Projects, Access, Federation & Replication, Platform
+	// Config, Xray, All Findings, Relationships, in that order.
+	order := []string{
+		`data-report-tab="overview"`, `data-report-tab="repos"`, `data-report-tab="projects"`,
+		`data-report-tab="access"`, `data-report-tab="fedrep"`, `data-report-tab="platform"`,
+		`data-report-tab="xray"`, `data-report-tab="all-findings"`, `data-report-tab="relationships"`,
+	}
+	last := -1
+	for _, tab := range order {
+		idx := strings.Index(html, tab)
+		if idx == -1 {
+			t.Fatalf("tab %q not found", tab)
+		}
+		if idx < last {
+			t.Fatalf("expected tab order Overview, Repos, Projects, Access, Federation & Replication, Platform Config, Xray, All Findings, Relationships - %q appeared out of order", tab)
+		}
+		last = idx
 	}
 }
 
@@ -118,6 +155,12 @@ func TestRender_WithoutInstance_NoTabsPanelsOrLeaks(t *testing.T) {
 	if strings.Count(html, "</script>") != 2 {
 		t.Fatalf("expected exactly 2 </script> tags (shared helpers + main) without instance data, got %d", strings.Count(html, "</script>"))
 	}
+	if !strings.Contains(html, `<section class="report-panel active" data-report-panel="repos">`) {
+		t.Error("expected Repos to be the default active panel without instance data")
+	}
+	if strings.Contains(html, `class="header-instance"`) {
+		t.Error("expected no header instance link without instance data")
+	}
 }
 
 func TestRenderRelationshipsPanel_EmbedsProjectsAndRepos(t *testing.T) {
@@ -156,7 +199,7 @@ func TestRenderRelationshipsPanel_EmbedsProjectsAndRepos(t *testing.T) {
 
 func TestRenderOverviewPanel_HighlightsSigningKeysWhenPresent(t *testing.T) {
 	snap := testSnapshot()
-	panel, err := renderOverviewPanel(snap)
+	panel, err := renderOverviewPanel(snap, 42)
 	if err != nil {
 		t.Fatalf("renderOverviewPanel returned error: %v", err)
 	}
@@ -171,7 +214,7 @@ func TestRenderOverviewPanel_HighlightsSigningKeysWhenPresent(t *testing.T) {
 func TestRenderOverviewPanel_NoSigningKeysIsOK(t *testing.T) {
 	snap := testSnapshot()
 	snap.Security.SigningKeys = nil
-	panel, err := renderOverviewPanel(snap)
+	panel, err := renderOverviewPanel(snap, 42)
 	if err != nil {
 		t.Fatalf("renderOverviewPanel returned error: %v", err)
 	}
@@ -180,12 +223,54 @@ func TestRenderOverviewPanel_NoSigningKeysIsOK(t *testing.T) {
 	}
 }
 
+func TestRenderOverviewPanel_ShowsEnvironmentCounts(t *testing.T) {
+	snap := testSnapshot() // 1 project, 1 user, 1 group, 1 permission target, 1 replication, 1 federated repo, 1 global role
+	panel, err := renderOverviewPanel(snap, 42)
+	if err != nil {
+		t.Fatalf("renderOverviewPanel returned error: %v", err)
+	}
+	if !strings.Contains(panel, "<h2>Environment counts</h2>") {
+		t.Fatal("expected an Environment counts section")
+	}
+	for _, want := range []string{
+		`<strong>42</strong><span>repositories</span>`,
+		`<strong>1</strong><span>projects</span>`,
+		`<strong>1</strong><span>users</span>`,
+		`<strong>1</strong><span>groups</span>`,
+		`<strong>1</strong><span>permission targets</span>`,
+		`<strong>1</strong><span>federated repos</span>`,
+		`<strong>1</strong><span>replication configs</span>`,
+		`<strong>1</strong><span>global roles</span>`,
+	} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("expected overview panel to contain %q", want)
+		}
+	}
+}
+
+func TestRenderProjectsPanel_IncludesRepoListForDrawer(t *testing.T) {
+	panel, err := renderProjectsPanel(testSnapshot()) // Project{Key: "team-a", Repos: []string{"r1", "r2"}}
+	if err != nil {
+		t.Fatalf("renderProjectsPanel returned error: %v", err)
+	}
+	// The "repos" column isn't in the visible table's columns list, but it's
+	// still part of each row's embedded JSON object, so mountTable's
+	// click-to-expand drawer (which dumps every field via Object.entries)
+	// shows a project's repos without a dedicated column for it.
+	if !strings.Contains(panel, `"repos":["r1","r2"]`) {
+		t.Error(`expected projects-table data to embed "repos":["r1","r2"] for the row-click drawer`)
+	}
+}
+
 func TestRenderPlatformConfigPanel(t *testing.T) {
 	panel, err := renderPlatformConfigPanel(testSnapshot())
 	if err != nil {
 		t.Fatalf("renderPlatformConfigPanel returned error: %v", err)
 	}
-	for _, want := range []string{"Global Developers", "180", "wh1", "artifact"} {
+	for _, want := range []string{
+		"Global Developers", "180", "wh1", "artifact",
+		"<h2>Signing keys</h2>", `mountTable("platform-signing-keys"`, "k1", "GPG",
+	} {
 		if !strings.Contains(panel, want) {
 			t.Errorf("expected platform config panel to contain %q", want)
 		}
@@ -222,7 +307,7 @@ func TestRenderXrayPanel_UnavailableShowsNotice(t *testing.T) {
 func TestRenderOverviewPanel_NoAuthConfigured(t *testing.T) {
 	snap := testSnapshot()
 	snap.Security.OIDCProviders = nil
-	panel, err := renderOverviewPanel(snap)
+	panel, err := renderOverviewPanel(snap, 42)
 	if err != nil {
 		t.Fatalf("renderOverviewPanel returned error: %v", err)
 	}

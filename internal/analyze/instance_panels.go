@@ -17,8 +17,11 @@ type tableColumn struct {
 	Numeric bool   `json:"numeric,omitempty"`
 }
 
-// renderInstanceTabs builds the "Overview"/"Access"/"Projects"/"Federation &
-// Replication" nav buttons and panels from an instance snapshot. Returns
+// renderInstanceTabs builds the "Projects"/"Access"/"Federation &
+// Replication"/"Platform Config"/"Xray" nav buttons and panels from an
+// instance snapshot, in that order. Overview, Repos, All Findings, and
+// Relationships are positioned around these by Render itself (Overview
+// needs the repo count, which isn't part of an instance.Snapshot). Returns
 // ("", "", nil) when snap is nil, so Render's single-panel behavior is
 // unchanged without one.
 func renderInstanceTabs(snap *instance.Snapshot) (navHTML, panelsHTML string, err error) {
@@ -31,9 +34,8 @@ func renderInstanceTabs(snap *instance.Snapshot) (navHTML, panelsHTML string, er
 		label string
 		build func(*instance.Snapshot) (string, error)
 	}{
-		{"overview", "Overview", renderOverviewPanel},
-		{"access", "Access", renderAccessPanel},
 		{"projects", "Projects", renderProjectsPanel},
+		{"access", "Access", renderAccessPanel},
 		{"fedrep", "Federation & Replication", renderFederationReplicationPanel},
 		{"platform", "Platform Config", renderPlatformConfigPanel},
 		{"xray", "Xray", renderXrayPanel},
@@ -51,9 +53,25 @@ func renderInstanceTabs(snap *instance.Snapshot) (navHTML, panelsHTML string, er
 	return nav.String(), panels.String(), nil
 }
 
-func renderOverviewPanel(snap *instance.Snapshot) (string, error) {
+func renderOverviewPanel(snap *instance.Snapshot, repoCount int) (string, error) {
 	sys := snap.System
 	var b strings.Builder
+
+	if snap.Name != "" || snap.URL != "" {
+		b.WriteString(`<h2>Instance</h2>`)
+		b.WriteString(`<p class="instance-line">`)
+		if snap.Name != "" {
+			fmt.Fprintf(&b, `<strong>%s</strong>`, htmlEscape(snap.Name))
+		}
+		if snap.URL != "" {
+			if snap.Name != "" {
+				b.WriteString(" &mdash; ")
+			}
+			fmt.Fprintf(&b, `<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>`,
+				htmlAttr(snap.URL), htmlEscape(snap.URL))
+		}
+		b.WriteString(`</p>`)
+	}
 
 	b.WriteString(`<h2>Component versions</h2><section class="stats">`)
 	fmt.Fprintf(&b, `<div class="stat"><strong>%s</strong><span>Artifactory (rev %s)</span></div>`,
@@ -69,6 +87,17 @@ func renderOverviewPanel(snap *instance.Snapshot) (string, error) {
 	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--teal)"><strong>%s</strong><span>binaries size (deduped)</span></div>`, htmlEscape(orDash(sys.BinariesSize)))
 	fmt.Fprintf(&b, `<div class="stat"><strong>%s</strong><span>optimization</span></div>`, htmlEscape(orDash(sys.Optimization)))
 	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--amber)"><strong>%s</strong><span>storage type</span></div>`, htmlEscape(orDash(sys.StorageType)))
+	b.WriteString("</section>")
+
+	b.WriteString(`<h2>Environment counts</h2><section class="stats">`)
+	fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>projects</span></div>`, len(snap.Projects))
+	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--purple)"><strong>%d</strong><span>repositories</span></div>`, repoCount)
+	fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>users</span></div>`, len(snap.Users))
+	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--teal)"><strong>%d</strong><span>groups</span></div>`, len(snap.Groups))
+	fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>permission targets</span></div>`, len(snap.Permissions))
+	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--amber)"><strong>%d</strong><span>federated repos</span></div>`, len(snap.FederatedRepos))
+	fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>replication configs</span></div>`, len(snap.Replications))
+	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--slate)"><strong>%d</strong><span>global roles</span></div>`, len(snap.Platform.GlobalRoles))
 	b.WriteString("</section>")
 
 	if len(sys.Addons) > 0 {
@@ -225,6 +254,11 @@ func renderPlatformConfigPanel(snap *instance.Snapshot) (string, error) {
 		}},
 		{"platform-certificates", "Certificates", p.Certificates, []tableColumn{
 			{Key: "certificateAlias", Label: "Alias"}, {Key: "issuedTo", Label: "Issued To"}, {Key: "issuedBy", Label: "Issued By"}, {Key: "validUntil", Label: "Valid Until"},
+		}},
+		// Key material itself is never captured - only pair name, type, and
+		// alias, same as the highlighted callout on the Overview tab.
+		{"platform-signing-keys", "Signing keys", snap.Security.SigningKeys, []tableColumn{
+			{Key: "pair_name", Label: "Pair Name"}, {Key: "pair_type", Label: "Pair Type"}, {Key: "alias", Label: "Alias"},
 		}},
 		{"platform-propertysets", "Property sets", p.PropertySets, []tableColumn{
 			{Key: "name", Label: "Name"}, {Key: "propertiesCount", Label: "Properties", Numeric: true},

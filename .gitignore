@@ -4,9 +4,11 @@
 /dist/
 
 # Generated `discover` output, if run from the repo root with the example/
-# default filenames from the README/docs.
+# default filenames from the README/docs, or with the current default
+# --output directory (output/<instance>/...).
 /report.csv
 /policies.csv
 /instance.json
 /audit.html
 /repo-audit.html
+/output/

@@ -8,6 +8,12 @@
 // them.
 package instance
 
+import (
+	"net"
+	"net/url"
+	"strings"
+)
+
 // SystemInfo holds component versions and the storage summary from
 // /artifactory/api/storageinfo. A component's *Available field is false
 // when its version endpoint returned 404 (not licensed/not installed on
@@ -415,7 +421,14 @@ type XrayConfig struct {
 // JSON file by internal/discover's "discover instance" and consumed by
 // "discover analyze --instance".
 type Snapshot struct {
-	GeneratedAt string       `json:"generated_at"`
+	GeneratedAt string `json:"generated_at"`
+	// URL is the JPD base URL used to collect this snapshot (e.g.
+	// "https://psazuse.jfrog.io"), and Name is the short instance-identifying
+	// name NameFromURL derives from it (e.g. "psazuse") - the analyze report
+	// displays both, and jfps discover's --output default directory naming
+	// uses the same Name so the two stay consistent.
+	URL         string       `json:"url,omitempty"`
+	Name        string       `json:"name,omitempty"`
 	System      SystemInfo   `json:"system"`
 	Security    SecurityInfo `json:"security"`
 
@@ -440,4 +453,29 @@ type Snapshot struct {
 	// fetch failing, a soft-skipped optional service, etc.) so the whole
 	// collection doesn't abort over one bad call.
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// NameFromURL derives a short instance-identifying name from a JPD base
+// URL, e.g. "https://psazuse.jfrog.io" -> "psazuse",
+// "https://jfrog-a.cloudlab.rocks" -> "jfrog-a". Falls back to the full
+// host for a bare IP (splitting "10.0.0.1" at the first "." would
+// collide two different instances on "172"), and to "default" if rawURL is
+// empty or doesn't parse into a usable host at all.
+func NameFromURL(rawURL string) string {
+	const fallback = "default"
+	if rawURL == "" {
+		return fallback
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Hostname() == "" {
+		return fallback
+	}
+	host := u.Hostname()
+	if net.ParseIP(host) != nil {
+		return host
+	}
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		return host[:i]
+	}
+	return host
 }

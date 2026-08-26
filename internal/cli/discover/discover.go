@@ -19,7 +19,9 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"jfrogpscli/internal/analyze"
@@ -35,9 +37,11 @@ func init() {
 }
 
 // Run parses one combined flag set and runs whichever of
-// --repos/--policies/--instance/--analyze (or --all) were selected, in
-// that fixed order, so a repo report or instance snapshot generated
-// earlier in the same invocation is what --analyze picks up.
+// --repos/--policies/--instance/--analyze (or --all) were selected.
+// --repos/--policies/--instance run concurrently by default when more than
+// one is selected (--parallel=false for sequentially instead); --analyze
+// always runs last, so it picks up whatever --repos/--instance just wrote
+// in the same invocation.
 func Run(args []string) int {
 	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help" || args[0] == "help") {
 		printUsage()
@@ -55,12 +59,14 @@ func Run(args []string) int {
 	doInstance := fs.Bool("instance", false, "Fetch the instance-wide snapshot (versions, security, access, projects, platform, Xray) -> --instance-json")
 	doAnalyze := fs.Bool("analyze", false, "Render the self-contained HTML audit from --repos-csv (+ --instance-json if present) -> --audit-html")
 	doAll := fs.Bool("all", false, "Shorthand for --repos --policies --instance --analyze")
+	parallel := fs.Bool("parallel", true, "Run --repos/--policies/--instance concurrently instead of sequentially when more than one is selected - faster, since they're independent network calls against the same JPD. Progress bars are suppressed while running concurrently (multiple live bars would garble the terminal); set false to run sequentially with full progress bars")
 
 	// --- output/input path flags (shared between generating and analyzing) ---
-	reposCSV := fs.String("repos-csv", "report.csv", "Path for the repo report CSV (written by --repos, read by --analyze)")
-	policiesCSV := fs.String("policies-csv", "policies.csv", "Path for the policy-mapping CSV (written by --policies)")
-	instanceJSON := fs.String("instance-json", "instance.json", "Path for the instance snapshot JSON (written by --instance, read by --analyze if present)")
-	auditHTML := fs.String("audit-html", "audit.html", "Path for the rendered HTML audit (written by --analyze)")
+	outputDir := fs.String("output", "output", "Base output folder; a subfolder named after the JPD's hostname (e.g. 'output/psazuse') is created under it and used for any of the paths below left at their default")
+	reposCSV := fs.String("repos-csv", "", "Path for the repo report CSV (written by --repos, read by --analyze) - default: <output>/<instance>/report.csv")
+	policiesCSV := fs.String("policies-csv", "", "Path for the policy-mapping CSV (written by --policies) - default: <output>/<instance>/policies.csv")
+	instanceJSON := fs.String("instance-json", "", "Path for the instance snapshot JSON (written by --instance, read by --analyze if present) - default: <output>/<instance>/instance.json")
+	auditHTML := fs.String("audit-html", "", "Path for the rendered HTML audit (written by --analyze) - default: <output>/<instance>/audit.html")
 
 	// --- --repos-specific flags ---
 	concurrency := fs.Int("concurrency", 8, "Repos/permission-targets/federated-repos/projects processed concurrently (be considerate on shared instances)")
@@ -92,6 +98,24 @@ func Run(args []string) int {
 		return 1
 	}
 
+	// Any path flag left at its default ("") lands under <output>/<instance>/
+	// instead of the current directory, so repeated runs against different
+	// JPDs don't overwrite each other's reports. An explicitly-set path flag
+	// is used exactly as given, ignoring --output entirely.
+	targetDir := filepath.Join(*outputDir, outputSubdir(serverFlags.PeekURL()))
+	if *reposCSV == "" {
+		*reposCSV = filepath.Join(targetDir, "report.csv")
+	}
+	if *policiesCSV == "" {
+		*policiesCSV = filepath.Join(targetDir, "policies.csv")
+	}
+	if *instanceJSON == "" {
+		*instanceJSON = filepath.Join(targetDir, "instance.json")
+	}
+	if *auditHTML == "" {
+		*auditHTML = filepath.Join(targetDir, "audit.html")
+	}
+
 	// Only the pieces that talk to Artifactory need a resolved client;
 	// --analyze alone makes no network calls at all.
 	var client *jfclient.Client
@@ -104,21 +128,71 @@ func Run(args []string) int {
 		client = c
 	}
 
-	if *doRepos {
-		if code := doReposReport(client, *reposCSV, *concurrency, *withPolicies, splitList(*include), splitList(*exclude)); code != 0 {
-			return code
+	selected := 0
+	for _, on := range []bool{*doRepos, *doPolicies, *doInstance} {
+		if on {
+			selected++
 		}
 	}
-	if *doPolicies {
-		if code := doPoliciesReport(client, *policiesCSV); code != 0 {
-			return code
+	// Only worth parallelizing (and only safe to show live progress bars
+	// for) when a single piece runs - two or more live \r-based bars
+	// updating the same terminal concurrently would garble each other.
+	runConcurrently := *parallel && selected > 1
+	showProgress := !runConcurrently
+
+	runRepos := func() int {
+		return doReposReport(client, *reposCSV, *concurrency, *withPolicies, splitList(*include), splitList(*exclude), showProgress)
+	}
+	runPolicies := func() int { return doPoliciesReport(client, *policiesCSV) }
+	runInstance := func() int {
+		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail, showProgress)
+	}
+
+	if runConcurrently {
+		fmt.Fprintln(os.Stderr, "discover: running repos/policies/instance concurrently (pass --parallel=false to run sequentially with full progress bars)")
+		var wg sync.WaitGroup
+		codes := make(chan int, selected)
+		launch := func(fn func() int) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				codes <- fn()
+			}()
+		}
+		if *doRepos {
+			launch(runRepos)
+		}
+		if *doPolicies {
+			launch(runPolicies)
+		}
+		if *doInstance {
+			launch(runInstance)
+		}
+		wg.Wait()
+		close(codes)
+		for code := range codes {
+			if code != 0 {
+				return code
+			}
+		}
+	} else {
+		if *doRepos {
+			if code := runRepos(); code != 0 {
+				return code
+			}
+		}
+		if *doPolicies {
+			if code := runPolicies(); code != 0 {
+				return code
+			}
+		}
+		if *doInstance {
+			if code := runInstance(); code != 0 {
+				return code
+			}
 		}
 	}
-	if *doInstance {
-		if code := doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail); code != 0 {
-			return code
-		}
-	}
+
 	if *doAnalyze {
 		if code := doAnalyzeReport(*reposCSV, *instanceJSON, *auditHTML, *staleDays, *hugeGB, *massiveFiles, *longNameChars); code != 0 {
 			return code
@@ -130,15 +204,20 @@ func Run(args []string) int {
 func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: jfps discover [--repos] [--policies] [--instance] [--analyze] [--all] [flags]")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Flags select which piece(s) to run, in this fixed order: repos, policies, instance, analyze -")
-	fmt.Fprintln(os.Stderr, "so 'discover --repos --instance --analyze' generates the report and snapshot, then renders")
-	fmt.Fprintln(os.Stderr, "the combined HTML audit, all in one invocation.")
+	fmt.Fprintln(os.Stderr, "Flags select which piece(s) to run - repos/policies/instance run concurrently by default when more")
+	fmt.Fprintln(os.Stderr, "than one is selected (--parallel=false for sequentially, with full progress bars), and analyze")
+	fmt.Fprintln(os.Stderr, "always runs last, so 'discover --repos --instance --analyze' generates the report and snapshot,")
+	fmt.Fprintln(os.Stderr, "then renders the combined HTML audit, all in one invocation.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  --repos       Per-repo package type, file count, usage, project, last-push/last-pull, cleanup-policy detail -> --repos-csv")
 	fmt.Fprintln(os.Stderr, "  --policies    Map every repo to its matching cleanup policy/policies (one row per repo x match) -> --policies-csv")
 	fmt.Fprintln(os.Stderr, "  --instance    Versions, storage, auth/signing-keys, users/groups/permissions, projects, platform & Xray config -> --instance-json")
 	fmt.Fprintln(os.Stderr, "  --analyze     Turn --repos-csv (+ --instance-json if present) into a self-contained interactive HTML audit -> --audit-html")
 	fmt.Fprintln(os.Stderr, "  --all         Shorthand for --repos --policies --instance --analyze")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "Output files land under --output (default \"output\"), in a subfolder named after the JPD's")
+	fmt.Fprintln(os.Stderr, "hostname, e.g. 'output/psazuse/report.csv' - unless --repos-csv/--policies-csv/--instance-json/")
+	fmt.Fprintln(os.Stderr, "--audit-html override an individual path explicitly.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps discover -h' to see every flag (output paths, concurrency, caps, analyze thresholds).")
 	fmt.Fprintln(os.Stderr, "Everything here is read-only - none of it ever writes to Artifactory. --analyze makes no network calls at all.")
@@ -152,6 +231,22 @@ func printNextSteps(lines ...string) {
 	for _, l := range lines {
 		fmt.Fprintf(os.Stderr, "  %s\n", l)
 	}
+}
+
+// outputSubdir derives the --output directory name for a JPD base URL. It's
+// the same instance.NameFromURL used to label the Overview tab and stamp
+// Snapshot.Name, so an instance's output folder and its displayed name in
+// the report always match (e.g. "https://psazuse.jfrog.io" -> "psazuse").
+func outputSubdir(rawURL string) string {
+	return instance.NameFromURL(rawURL)
+}
+
+// ensureParentDir creates path's parent directory (and any missing
+// ancestors) so os.Create/os.WriteFile can't fail with ENOENT - covers both
+// the computed <output>/<instance>/ default and an explicit nested path the
+// user passed directly.
+func ensureParentDir(path string) error {
+	return os.MkdirAll(filepath.Dir(path), 0o755)
 }
 
 // splitList splits a comma-separated flag value into a trimmed, non-empty
@@ -173,13 +268,15 @@ func splitList(s string) []string {
 // repos
 // ---------------------------------------------------------------------------
 
-func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string) int {
+func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, showProgress bool) int {
 	opts := discover.ReportOptions{
 		Concurrency:  concurrency,
 		WithPolicies: withPolicies,
 		Include:      include,
 		Exclude:      exclude,
-		Progress:     func(done, total int) { progressBar("Repos", done, total) },
+	}
+	if showProgress {
+		opts.Progress = func(done, total int) { progressBar("Repos", done, total) }
 	}
 
 	rows, warnings, err := discover.Report(client, opts)
@@ -191,6 +288,10 @@ func doReposReport(client *jfclient.Client, csvPath string, concurrency int, wit
 		fmt.Fprintf(os.Stderr, "discover --repos: warning: %s\n", w)
 	}
 
+	if err := ensureParentDir(csvPath); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 	f, err := os.Create(csvPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -221,6 +322,10 @@ func doPoliciesReport(client *jfclient.Client, csvPath string) int {
 		return 1
 	}
 
+	if err := ensureParentDir(csvPath); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 	f, err := os.Create(csvPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -239,7 +344,7 @@ func doPoliciesReport(client *jfclient.Client, csvPath string) int {
 // instance
 // ---------------------------------------------------------------------------
 
-func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool) int {
+func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail, showProgress bool) int {
 	fmt.Fprintln(os.Stderr, "discover --instance: fetching repo list (for project repo-counts and federation targets)...")
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
@@ -258,7 +363,9 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 	collectOpts.MaxGroups = maxGroups
 	collectOpts.MaxPermissions = maxPermissions
 	collectOpts.ProjectDetail = projectDetail
-	collectOpts.Progress = func(stage string, done, total int) { progressBar(stage, done, total) }
+	if showProgress {
+		collectOpts.Progress = func(stage string, done, total int) { progressBar(stage, done, total) }
+	}
 
 	snap, err := discover.CollectInstance(client, repos, collectOpts)
 	if err != nil {
@@ -280,6 +387,10 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 		fmt.Fprintf(os.Stderr, "discover --instance: permission targets truncated at --max-permissions=%d\n", maxPermissions)
 	}
 
+	if err := ensureParentDir(outputPath); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
 	f, err := os.Create(outputPath)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
@@ -342,6 +453,10 @@ func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays in
 		Instance:    snap,
 	})
 	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if err := ensureParentDir(outputPath); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}

@@ -90,6 +90,49 @@ func TestResolveMissingURL(t *testing.T) {
 	}
 }
 
+func TestPeekURL_FromFlag(t *testing.T) {
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	f := Register(fs, "")
+	if err := fs.Parse([]string{"--url", "https://x.jfrog.io"}); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := f.PeekURL(); got != "https://x.jfrog.io" {
+		t.Fatalf("PeekURL() = %q, want https://x.jfrog.io", got)
+	}
+}
+
+func TestPeekURL_FromEnv_NoCredentialsNeeded(t *testing.T) {
+	os.Setenv("JFPS_URL", "https://env.jfrog.io")
+	defer os.Unsetenv("JFPS_URL")
+
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	f := Register(fs, "")
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := f.PeekURL(); got != "https://env.jfrog.io" {
+		t.Fatalf("PeekURL() = %q, want https://env.jfrog.io", got)
+	}
+}
+
+func TestPeekURL_Missing(t *testing.T) {
+	for _, k := range []string{"JFPS_URL", "JFPS_ACCESS_TOKEN", "JFPS_USER", "JFPS_PASSWORD"} {
+		old, had := os.LookupEnv(k)
+		os.Unsetenv(k)
+		if had {
+			defer os.Setenv(k, old)
+		}
+	}
+	fs := flag.NewFlagSet("test", flag.ContinueOnError)
+	f := Register(fs, "")
+	if err := fs.Parse(nil); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := f.PeekURL(); got != "" {
+		t.Fatalf("PeekURL() = %q, want empty when nothing is configured", got)
+	}
+}
+
 func TestResolveFromSavedProfile(t *testing.T) {
 	dir := t.TempDir()
 	os.Setenv("JFPS_CONFIG_HOME", dir)

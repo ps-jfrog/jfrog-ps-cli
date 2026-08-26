@@ -45,7 +45,7 @@ func DefaultCollectOptions() CollectOptions {
 // soft-fails into Snapshot.Warnings so one broken/unlicensed endpoint
 // doesn't blank out the rest of the report.
 func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOptions) (*instance.Snapshot, error) {
-	snap := &instance.Snapshot{}
+	snap := &instance.Snapshot{URL: c.BaseURL, Name: instance.NameFromURL(c.BaseURL)}
 
 	sysInfo, sysWarnings, err := GetSystemInfo(c)
 	if err != nil {

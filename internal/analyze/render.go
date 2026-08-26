@@ -80,6 +80,17 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		return "", err
 	}
 	if navTabsHTML != "" {
+		// Order: Overview, Repos, [Projects/Access/Fedrep/Platform/Xray from
+		// renderInstanceTabs], All Findings, Relationships. Overview is built
+		// here rather than by renderInstanceTabs because it needs the repo
+		// count, which isn't part of an instance.Snapshot.
+		overviewContent, err := renderOverviewPanel(ro.Instance, len(rows))
+		if err != nil {
+			return "", fmt.Errorf("render overview panel: %w", err)
+		}
+		overviewNav := `<button class="report-tab active" data-report-tab="overview">Overview</button>`
+		overviewPanel := "\n  <section class=\"report-panel active\" data-report-panel=\"overview\">\n" + overviewContent + "\n  </section>\n"
+
 		// Only worth its own tab once there's cross-resource data to
 		// combine with the repo findings - without an instance snapshot,
 		// the Repos tab's own findings cards/explorer already cover this.
@@ -97,9 +108,25 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		relationshipsNav := `<button class="report-tab" data-report-tab="relationships">Relationships</button>`
 		relationshipsPanel := "\n  <section class=\"report-panel\" data-report-panel=\"relationships\">\n" + relationshipsContent + "\n  </section>\n"
 
-		navTabsHTML = `<button class="report-tab active" data-report-tab="repos">Repos</button>` +
-			allFindingsNav + relationshipsNav + navTabsHTML
-		extraPanelsHTML = allFindingsPanel + relationshipsPanel + extraPanelsHTML
+		navTabsHTML = overviewNav +
+			`<button class="report-tab" data-report-tab="repos">Repos</button>` +
+			navTabsHTML + allFindingsNav + relationshipsNav
+		extraPanelsHTML = overviewPanel + extraPanelsHTML + allFindingsPanel + relationshipsPanel
+	}
+
+	// Overview is the default tab once there's an instance snapshot to show
+	// one for; without it, Repos (the only tab that always exists) stays
+	// the default, exactly as before this report had an Overview tab.
+	reposActiveClass := ""
+	if ro.Instance == nil {
+		reposActiveClass = " active"
+	}
+
+	var headerInstanceHTML string
+	if ro.Instance != nil && ro.Instance.URL != "" {
+		headerInstanceHTML = fmt.Sprintf(
+			`<a class="header-instance" href="%s" target="_blank" rel="noopener noreferrer">%s</a>`,
+			htmlAttr(ro.Instance.URL), htmlEscape(ro.Instance.URL))
 	}
 
 	replacer := strings.NewReplacer(
@@ -113,6 +140,8 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		"__GENERATED_AT__", htmlEscape(ro.GeneratedAt.Format("2006-01-02 15:04:05 MST")),
 		"__NAV_TABS__", navTabsHTML,
 		"__EXTRA_PANELS__", extraPanelsHTML,
+		"__REPOS_ACTIVE_CLASS__", reposActiveClass,
+		"__HEADER_INSTANCE__", headerInstanceHTML,
 	)
 	return replacer.Replace(pageTemplate), nil
 }
