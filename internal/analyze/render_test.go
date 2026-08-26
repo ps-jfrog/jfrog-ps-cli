@@ -27,8 +27,11 @@ func TestRender_ProducesValidEmbeddedJSONAndNoLeftoverPlaceholders(t *testing.T)
 	if m := regexp.MustCompile(`__[A-Z_]+__`).FindString(html); m != "" {
 		t.Fatalf("found unreplaced template placeholder: %q", m)
 	}
-	if strings.Count(html, "</script>") != 1 {
-		t.Fatalf("expected exactly one </script> tag, got %d", strings.Count(html, "</script>"))
+	// The shared-helpers block (escapeHtml/mountTable/etc., which must load
+	// before <main> - see the ordering bug this guards against) plus the
+	// main repos-panel script - two total, none from instance panels here.
+	if strings.Count(html, "</script>") != 2 {
+		t.Fatalf("expected exactly two </script> tags, got %d", strings.Count(html, "</script>"))
 	}
 
 	dataJSON := extractBetween(t, html, "const DATA = ", ";\nconst FINDING_DEFS")

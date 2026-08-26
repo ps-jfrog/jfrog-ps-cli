@@ -62,8 +62,8 @@ func TestRender_WithInstance_AddsTabsAndPanels(t *testing.T) {
 		}
 	}
 
-	if strings.Count(html, "</script>") < 7 {
-		t.Fatalf("expected at least 7 </script> tags (main + 6 mounted tables), got %d", strings.Count(html, "</script>"))
+	if strings.Count(html, "</script>") < 8 {
+		t.Fatalf("expected at least 8 </script> tags (shared helpers + main + 6 mounted tables), got %d", strings.Count(html, "</script>"))
 	}
 }
 
@@ -79,8 +79,8 @@ func TestRender_WithoutInstance_NoTabsPanelsOrLeaks(t *testing.T) {
 	if strings.Contains(html, "data-report-tab=\"overview\"") {
 		t.Fatal("expected no Overview tab without instance data")
 	}
-	if strings.Count(html, "</script>") != 1 {
-		t.Fatalf("expected exactly 1 </script> tag without instance data, got %d", strings.Count(html, "</script>"))
+	if strings.Count(html, "</script>") != 2 {
+		t.Fatalf("expected exactly 2 </script> tags (shared helpers + main) without instance data, got %d", strings.Count(html, "</script>"))
 	}
 }
 

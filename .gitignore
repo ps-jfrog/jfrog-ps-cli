@@ -2,3 +2,11 @@
 *.test
 *.out
 /dist/
+
+# Generated `discover` output, if run from the repo root with the example/
+# default filenames from the README/docs.
+/report.csv
+/policies.csv
+/instance.json
+/audit.html
+/repo-audit.html
