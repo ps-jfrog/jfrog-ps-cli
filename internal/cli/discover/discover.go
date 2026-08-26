@@ -64,6 +64,16 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "All four subcommands are read-only - none of them ever writes to Artifactory. 'analyze' makes no network calls at all.")
 }
 
+// printNextSteps prints a "Next:" hint block to stderr so it's visible
+// alongside progress output but never mixed into a CSV/JSON/HTML payload
+// written to stdout.
+func printNextSteps(lines ...string) {
+	fmt.Fprintln(os.Stderr, "\nNext:")
+	for _, l := range lines {
+		fmt.Fprintf(os.Stderr, "  %s\n", l)
+	}
+}
+
 // splitList splits a comma-separated flag value into a trimmed, non-empty
 // slice, e.g. "a, b ,,c" -> ["a","b","c"]. Returns nil for an empty input.
 func splitList(s string) []string {
@@ -138,9 +148,17 @@ func runRepos(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
+	reportRef := "report.csv"
 	if *csvPath != "" {
 		fmt.Fprintf(os.Stderr, "Wrote %d repo(s) to %s\n", len(rows), *csvPath)
+		reportRef = *csvPath
+	} else {
+		fmt.Fprintln(os.Stderr, "Wrote CSV to stdout - redirect to a file (> report.csv) to use it with 'discover analyze'.")
 	}
+	printNextSteps(
+		"jfps discover instance --output instance.json   (capture instance-wide versions/security/access/projects/federation)",
+		fmt.Sprintf("jfps discover analyze --input %s --instance instance.json --output audit.html   (view it all as one HTML report)", reportRef),
+	)
 	return 0
 }
 
@@ -190,7 +208,13 @@ func runPolicies(args []string) int {
 	}
 	if *csvPath != "" {
 		fmt.Fprintf(os.Stderr, "Wrote %d repo(s), %d policy/policies to %s\n", len(repos), len(policies), *csvPath)
+	} else {
+		fmt.Fprintln(os.Stderr, "Wrote CSV to stdout - redirect to a file (> policies.csv) to keep it.")
 	}
+	printNextSteps(
+		"jfps discover repos --csv report.csv   (per-repo view with policy detail merged in, if you haven't already)",
+		"Look for repos with a blank policy_key (uncovered) or more than one row (overlapping policies).",
+	)
 	return 0
 }
 
@@ -262,6 +286,10 @@ func runInstance(args []string) int {
 	}
 	fmt.Fprintf(os.Stdout, "Wrote %s (%d users, %d groups, %d permission targets, %d projects, %d replications, %d federated repos)\n",
 		*output, len(snap.Users), len(snap.Groups), len(snap.Permissions), len(snap.Projects), len(snap.Replications), len(snap.FederatedRepos))
+	printNextSteps(
+		"jfps discover repos --csv report.csv   (per-repo view, if you haven't already)",
+		fmt.Sprintf("jfps discover analyze --input report.csv --instance %s --output audit.html   (view it all as one HTML report)", *output),
+	)
 	return 0
 }
 
@@ -339,5 +367,13 @@ func runAnalyze(args []string) int {
 		return 1
 	}
 	fmt.Fprintf(os.Stdout, "Wrote %s (%d repos analyzed)\n", *output, len(rows))
+	if snap == nil {
+		printNextSteps(
+			fmt.Sprintf("open %s in a browser to explore the report", *output),
+			"jfps discover instance --output instance.json, then re-run with --instance instance.json to add Overview/Access/Projects/Federation tabs",
+		)
+	} else {
+		printNextSteps(fmt.Sprintf("open %s in a browser to explore the report", *output))
+	}
 	return 0
 }

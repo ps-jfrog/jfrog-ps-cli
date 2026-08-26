@@ -28,6 +28,11 @@ import (
 	_ "jfrogpscli/internal/cli/xray"
 )
 
+// version is set at build time via -ldflags "-X main.version=...", which
+// goreleaser does automatically from the git tag (see .goreleaser.yaml). A
+// binary built with plain "go build" (no ldflags) reports "dev".
+var version = "dev"
+
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
@@ -39,6 +44,10 @@ func run(args []string) int {
 	}
 	if args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
 		printUsage()
+		return 0
+	}
+	if args[0] == "-v" || args[0] == "--version" || args[0] == "version" {
+		fmt.Println("jfps version " + version)
 		return 0
 	}
 

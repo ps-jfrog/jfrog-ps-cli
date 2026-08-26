@@ -24,6 +24,14 @@ func TestRunUnknownCommandReturnsError(t *testing.T) {
 	}
 }
 
+func TestRunVersionReturnsZero(t *testing.T) {
+	for _, args := range [][]string{{"-v"}, {"--version"}, {"version"}} {
+		if code := run(args); code != 0 {
+			t.Fatalf("expected exit code 0 for %v, got %d", args, code)
+		}
+	}
+}
+
 func TestAllRegisteredCommandsHaveHelp(t *testing.T) {
 	for _, name := range registry.Names() {
 		if registry.Help(name) == "" {
@@ -35,7 +43,7 @@ func TestAllRegisteredCommandsHaveHelp(t *testing.T) {
 // TestExpectedFeatureCommandsRegistered guards against a feature package
 // forgetting to call registry.Register in its init().
 func TestExpectedFeatureCommandsRegistered(t *testing.T) {
-	want := []string{"access", "cleanup", "repos", "projects", "replication", "federation", "compare", "xray"}
+	want := []string{"access", "cleanup", "discover", "repos", "projects", "replication", "federation", "compare", "xray"}
 	got := map[string]bool{}
 	for _, n := range registry.Names() {
 		got[n] = true

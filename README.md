@@ -57,6 +57,28 @@ amd64/arm64) via [goreleaser](https://goreleaser.com/) (`.goreleaser.yaml`):
 goreleaser release --snapshot --clean   # -> dist/, untagged local build
 ```
 
+## Releasing
+
+Pushing a `v*` tag (e.g. `v1.2.3`) triggers
+[`.github/workflows/release.yml`](.github/workflows/release.yml): it runs
+`go vet`/`go test`, then goreleaser builds all 6 platform/arch binaries and
+publishes them to a GitHub Release.
+
+```sh
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+The tag is baked into the binary at build time (`-X main.version={{.Tag}}` in
+`.goreleaser.yaml`), so it matches exactly what the release shows:
+
+```sh
+jfps -v          # or --version / version
+# jfps version v1.2.3
+```
+
+A binary built without goreleaser (plain `go build`) reports `dev`.
+
 ## Testing
 
 ```sh

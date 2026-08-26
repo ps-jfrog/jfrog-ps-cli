@@ -1,0 +1,177 @@
+---
+name: jfps
+description: >-
+  Use the jfps binary (this repo, jfrog-ps-cli) for JFrog Professional
+  Services automation: repo/cleanup-policy/project discovery and HTML audit
+  reporting, access (users/groups/permission targets) management, bulk
+  cleanup (artifacts, repos, inactive users, stale Docker tags, remote-cache),
+  repo/project sync between two JPDs, replication, federation, migration
+  comparison (repo content, build-info, JSON diff), and Xray operations.
+  Use this skill when the user wants to run jfps, build/install it, cut a
+  release, or asks about any of: repo storage/activity/usage audit, cleanup
+  policy coverage, "which repos have no cleanup policy", instance-wide
+  discovery (versions, storage, auth/signing keys, users, groups,
+  permissions, projects, replication, federation config), a self-contained
+  HTML audit report, bulk repo/artifact/user deletion with dry-run, Docker
+  tag cleanup, remote-cache cleanup gated on Xray indexing, or comparing two
+  JFrog Platform Deployments during a migration.
+  Do NOT use this for general single-artifact JFrog CLI operations (upload,
+  download, build-publish, AQL search, GraphQL/OneModel queries) - that's the
+  `jf` CLI and its own `jfrog` skill, a different tool. jfps wraps bulk/
+  reporting/PS-workflow operations the `jf` CLI doesn't do directly.
+metadata:
+  role: tool
+  repo: jfrog-ps-cli
+---
+
+# jfps — JFrog Professional Services CLI
+
+`jfps` is a single, dependency-free Go binary (this repo) consolidating
+JFrog PS automation into one consistently-designed CLI. It is **not** the
+`jf` CLI — don't confuse the two. `jfps` talks to Artifactory/Access/Xray
+over plain HTTP (its own `internal/jfclient`), independent of any `jf`
+config or session.
+
+## Building / getting a binary
+
+```sh
+go build -o jfps ./cmd/jfps          # local build, reports "dev" for -v
+goreleaser release --snapshot --clean # -> dist/, all 6 platform/arch combos
+```
+
+No external Go dependencies — builds offline with any recent Go toolchain.
+Releases are cut by pushing a `v*` tag (see [Cutting a release](#cutting-a-release-maintainers)).
+
+## Connecting to a JPD
+
+Every subcommand takes the same connection flags, resolved in priority order
+**explicit flags > saved profile (`--server <name>`) > environment
+variables**:
+
+```
+--url <https://mycompany.jfrog.io>   or  JFPS_URL
+--token <access-token>                or  JFPS_ACCESS_TOKEN
+--user / --password (basic auth fallback, used only if --token is empty)
+--insecure                            (skip TLS verification)
+--server <name>                       (saved profile in ~/.jfps/servers.json)
+```
+
+Commands that reconcile two JPDs at once (`compare`, `replication restore`,
+`repos diff`/`sync-config`, `projects diff`) use `--source-*`/`--target-*`
+variants of every flag, and `JFPS_SOURCE_*`/`JFPS_TARGET_*` env vars.
+
+There is no saved-profile `config add` subcommand yet — write
+`~/.jfps/servers.json` directly (see the top-level README for the format).
+
+## Safety model — read before running anything mutating
+
+**Every mutating subcommand defaults `--dry-run` to `true`.** In dry-run
+mode, zero write calls (POST/PUT/PATCH/DELETE) are issued — only reads —
+and the command prints what it would have done. You must pass
+`--dry-run=false` explicitly to apply a change. The most destructive
+commands (bulk user/group/permission/repo/project deletion) additionally
+require an interactive `[y/N]` confirmation even with `--dry-run=false`,
+unless `--yes` is passed.
+
+**When helping a user run jfps: default to dry-run.** Only pass
+`--dry-run=false` when the user has explicitly asked to apply the change,
+not merely to "check" or "see" something.
+
+## Command groups
+
+| Command | Covers | Mutates? |
+|---|---|---|
+| `jfps discover` | Repo storage/activity/cleanup-policy/project reporting; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation; self-contained HTML audit | No — fully read-only |
+| `jfps access` | Users, groups, permission targets: list/audit, create, grant-path, add/remove repos, backup, bulk delete | Yes (dry-run default) |
+| `jfps cleanup` | AQL-driven artifact deletion, bulk repo deletion, inactive-user pruning, source-vs-target reconciliation, Docker tag cleanup, Xray-gated remote-cache cleanup | Yes (dry-run default) |
+| `jfps repos` | List, diff (create-missing-only), full-config sync, bulk delete | List: no. Diff/sync/delete: yes |
+| `jfps projects` | List, diff (create missing / optionally delete extra), bulk delete | List: no. Diff/delete: yes |
+| `jfps replication` | List/check, create, delete, disable, backup, restore push replication | Yes (dry-run default) |
+| `jfps federation` | Convert to/from federated, member health check, config resync | Yes (dry-run default) |
+| `jfps compare` | Repo content diff (checksums), build-info diff/migrate, generic JSON diff | Diff: no. Migrate: yes |
+| `jfps xray` | Index status/toggle/reindex, report list/delete, policy/watch/ignore-rule sync | Mixed — check subcommand |
+
+Run `jfps <command>` with no subcommand, or `jfps <command> <subcommand> -h`,
+for the exact flags. Full per-command flag/behavior reference:
+[`docs/`](../../../docs/README.md) (one page per command, with a sequence
+diagram of the actual HTTP calls each subcommand makes).
+
+## `discover` — the read-only reporting group
+
+This is the group to reach for whenever the ask is "audit," "report on,"
+"what repos/users/policies exist," or "give me a dashboard" — not "clean
+up" or "delete" (that's `cleanup`/`access`). All four subcommands are
+read-only; `analyze` makes no network calls at all.
+
+**Output format choice, and why:** `repos`/`policies` write **CSV** (flat
+per-row data — opens directly in Excel/Sheets, and it's what `analyze`
+parses). `instance` writes **JSON**, not YAML — it's machine-generated
+hierarchical data (nested users/groups/permissions), and JSON avoids YAML's
+implicit-typing gotchas (`no`/`yes` becoming booleans, a version string like
+`3.10` becoming a number) that a hand-rolled parser would otherwise have to
+guard against.
+
+Recommended sequence — each command prints a "Next:" hint block to stderr
+telling you exactly this:
+
+```sh
+# 1. Per-repo storage/activity + cleanup-policy detail + project assignment
+jfps discover repos --url ... --token ... --csv report.csv
+#    On a large/shared instance, scope first: --include 'team-a-*'
+#    (3 AQL calls per non-empty repo - be considerate)
+
+# 2. Instance-wide: versions, storage, auth/signing keys, users, groups,
+#    permission targets, projects, replication, federation
+jfps discover instance --url ... --token ... --output instance.json
+
+# 3. Combine into one self-contained interactive HTML audit (no network calls)
+jfps discover analyze --input report.csv --instance instance.json --output audit.html
+```
+
+`analyze` works with just `--input` (a single "Repos" tab: findings +
+explorer). Adding `--instance` adds four more tabs: Overview (versions,
+storage, auth methods, a **highlighted callout if repository signing keys
+are configured** — metadata only, never key material), Access (searchable
+Users/Groups/Permission-Targets tables), Projects (with repo counts), and
+Federation & Replication.
+
+`discover repos` findings (computed by `analyze`, each skipped rather than
+mis-flagged if its source column is absent): `empty`, `stale` (no
+push/pull inside `--stale-days`, default 180), `huge`/`massive-files` (over
+`--huge-gb`/`--massive-files`), `naming-nonconformant`/`uppercase`/
+`underscore`/`very-long-name`, `no-cleanup-policy`, `multi-policy-match`.
+
+`discover policies` is the drill-down companion to `repos`'s merged
+`cleanup_policy_*` columns — one row per repo × matched policy (or a blank
+row when nothing matches), for spotting uncovered or ambiguously-overlapping
+repos that a single joined CSV cell would hide.
+
+## Version / cutting a release (maintainers)
+
+```sh
+jfps -v   # or --version / version -> "jfps version v1.2.3" (or "dev" for a plain go build)
+```
+
+Pushing a `v*` tag triggers `.github/workflows/release.yml`: `go vet`/
+`go test`, then goreleaser builds all 6 platform/arch binaries (linux/
+darwin/windows × amd64/arm64) and publishes a GitHub Release. The tag is
+baked into the binary via `-X main.version={{.Tag}}` in `.goreleaser.yaml`,
+so `-v` always matches the tag exactly:
+
+```sh
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+## Testing
+
+```sh
+go build ./...
+go vet   ./...
+go test  ./...   # mocked HTTP via httptest, no live JPD needed
+```
+
+Every package has real unit-test coverage (business-logic packages
+typically 70–94%). There is no live-JPD integration suite — validate
+against a real (ideally non-production) JPD before relying on this for
+anything customer-facing.
