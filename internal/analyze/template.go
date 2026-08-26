@@ -119,7 +119,12 @@ function prettyLabel(key) {
 
 function cellDisplay(value) {
   if (value === undefined || value === null || value === "") return "";
-  if (Array.isArray(value)) return value.join(", ");
+  if (Array.isArray(value)) {
+    // Array.prototype.join calls each element's default toString(), which
+    // yields "[object Object]" for an array of objects (e.g. federation
+    // "members": [{url,enabled}, ...]) - stringify those individually.
+    return value.map(v => (v !== null && typeof v === "object") ? JSON.stringify(v) : String(v)).join(", ");
+  }
   if (typeof value === "object") return JSON.stringify(value);
   return String(value);
 }
