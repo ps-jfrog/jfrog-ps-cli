@@ -50,6 +50,13 @@ No external dependencies — the whole tree is Go standard library only, so
 this builds offline with any reasonably recent Go toolchain (developed and
 tested against Go 1.26).
 
+To cross-compile for every platform at once (linux/darwin/windows ×
+amd64/arm64) via [goreleaser](https://goreleaser.com/) (`.goreleaser.yaml`):
+
+```sh
+goreleaser release --snapshot --clean   # -> dist/, untagged local build
+```
+
 ## Testing
 
 ```sh
