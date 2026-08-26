@@ -80,7 +80,26 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		return "", err
 	}
 	if navTabsHTML != "" {
-		navTabsHTML = `<button class="report-tab active" data-report-tab="repos">Repos</button>` + navTabsHTML
+		// Only worth its own tab once there's cross-resource data to
+		// combine with the repo findings - without an instance snapshot,
+		// the Repos tab's own findings cards/explorer already cover this.
+		allFindingsContent, err := renderAllFindingsPanel(rows, defs, ro.Instance)
+		if err != nil {
+			return "", fmt.Errorf("render all-findings panel: %w", err)
+		}
+		allFindingsNav := `<button class="report-tab" data-report-tab="all-findings">All Findings</button>`
+		allFindingsPanel := "\n  <section class=\"report-panel\" data-report-panel=\"all-findings\">\n" + allFindingsContent + "\n  </section>\n"
+
+		relationshipsContent, err := renderRelationshipsPanel(rows, ro.Instance)
+		if err != nil {
+			return "", fmt.Errorf("render relationships panel: %w", err)
+		}
+		relationshipsNav := `<button class="report-tab" data-report-tab="relationships">Relationships</button>`
+		relationshipsPanel := "\n  <section class=\"report-panel\" data-report-panel=\"relationships\">\n" + relationshipsContent + "\n  </section>\n"
+
+		navTabsHTML = `<button class="report-tab active" data-report-tab="repos">Repos</button>` +
+			allFindingsNav + relationshipsNav + navTabsHTML
+		extraPanelsHTML = allFindingsPanel + relationshipsPanel + extraPanelsHTML
 	}
 
 	replacer := strings.NewReplacer(

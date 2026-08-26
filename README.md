@@ -138,7 +138,7 @@ the full list at any time. Every leaf subcommand also supports `-h`.
 |---|---|
 | `jfps access` | Users, groups, permission targets: list/audit, create, grant-path, add/remove repos, backup, bulk delete with dry-run |
 | `jfps cleanup` | AQL-driven artifact deletion (with built-in "not downloaded since" queries), bulk repo deletion, inactive-user detection/removal, source-vs-target artifact reconciliation, stale Docker/OCI tag cleanup, remote-cache cleanup gated on Xray index status |
-| `jfps discover` | Per-repo storage/usage/activity/project + matched cleanup-policy detail (CSV); repo↔policy mapping; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation (JSON); a self-contained interactive HTML audit combining all of it |
+| `jfps discover` | One command, flags select the piece(s): per-repo storage/usage/activity/project + cleanup-policy detail (CSV); repo↔policy mapping; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation/platform-config/Xray-config (JSON); a self-contained interactive HTML audit combining all of it |
 | `jfps repos` | List, diff (create-missing-only, never deletes), full-config sync, bulk delete |
 | `jfps projects` | List, diff (create missing / optionally delete extra), bulk delete |
 | `jfps replication` | List/check, create, delete, disable, backup, restore push replication |
@@ -180,17 +180,21 @@ jfps cleanup remote-cache --repo npm-remote --older-than 6mo --url ... --token .
 # Compare build-info between two JPDs after a migration
 jfps compare builds --source-url ... --source-token ... --target-url ... --target-token ...
 
-# Discover: per-repo storage/activity + matched cleanup-policy detail, scoped
-# to a subset first on a large/shared instance (3 AQL calls per non-empty repo)
-jfps discover repos --url ... --token ... --include 'myteam-*' --csv report.csv
+# Discover is one command with selection flags, not subcommands - run any
+# combination together. --all is shorthand for --repos --policies --instance --analyze.
+jfps discover --all --url ... --token ...
 
-# Discover instance-wide state: versions, storage, auth/signing keys, users,
-# groups, permissions, projects, replication & federation config
-jfps discover instance --url ... --token ... --output instance.json
+# Or individually: per-repo storage/activity + matched cleanup-policy detail,
+# scoped to a subset first on a large/shared instance (3 AQL calls per non-empty repo)
+jfps discover --repos --url ... --token ... --include 'myteam-*' --repos-csv report.csv
+
+# Instance-wide state: versions, storage, auth/signing keys, users, groups,
+# permissions, projects, replication/federation, platform config, Xray config
+jfps discover --instance --url ... --token ... --instance-json instance.json
 
 # Turn both into one self-contained interactive HTML audit - no JPD
 # connection needed for this step, works on files from any environment
-jfps discover analyze --input report.csv --instance instance.json --output audit.html
+jfps discover --analyze --repos-csv report.csv --instance-json instance.json --audit-html audit.html
 
 # Check Xray federation/index status
 jfps xray index status --url ... --token ... --type local

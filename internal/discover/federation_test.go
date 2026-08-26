@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -23,7 +24,7 @@ func TestGetFederatedRepos_OnlyFetchesFederatedType(t *testing.T) {
 		{RepoKey: "local-repo", RepoType: "LOCAL"},
 		{RepoKey: "remote-repo", RepoType: "REMOTE"},
 	}
-	federated, warnings := GetFederatedRepos(testClient(t, srv), repos, 2)
+	federated, warnings := GetFederatedRepos(testClient(t, srv), repos, 2, nil)
 	if len(warnings) != 0 {
 		t.Fatalf("expected no warnings, got %v", warnings)
 	}
@@ -41,7 +42,7 @@ func TestGetFederatedRepos_NoFederatedReposReturnsNil(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	federated, warnings := GetFederatedRepos(testClient(t, srv), []RepoSummary{{RepoKey: "local-repo", RepoType: "LOCAL"}}, 2)
+	federated, warnings := GetFederatedRepos(testClient(t, srv), []RepoSummary{{RepoKey: "local-repo", RepoType: "LOCAL"}}, 2, nil)
 	if federated != nil || warnings != nil {
 		t.Fatalf("expected nil/nil, got %+v / %+v", federated, warnings)
 	}
@@ -62,11 +63,38 @@ func TestGetFederatedRepos_OneFailureDoesNotAbortOthers(t *testing.T) {
 		{RepoKey: "ok", RepoType: "FEDERATED"},
 		{RepoKey: "broken", RepoType: "FEDERATED"},
 	}
-	federated, warnings := GetFederatedRepos(testClient(t, srv), repos, 2)
+	federated, warnings := GetFederatedRepos(testClient(t, srv), repos, 2, nil)
 	if len(federated) != 1 || federated[0].RepoKey != "ok" {
 		t.Fatalf("expected only the successful repo, got %+v", federated)
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 warning, got %v", warnings)
+	}
+}
+
+func TestGetFederatedRepos_ReportsProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"members": []map[string]interface{}{}})
+	}))
+	defer srv.Close()
+
+	repos := []RepoSummary{
+		{RepoKey: "a", RepoType: "FEDERATED"}, {RepoKey: "b", RepoType: "FEDERATED"}, {RepoKey: "c", RepoType: "FEDERATED"},
+	}
+	var mu sync.Mutex
+	var calls int
+	var lastDone, lastTotal int
+	GetFederatedRepos(testClient(t, srv), repos, 2, func(done, total int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		lastDone, lastTotal = done, total
+	})
+	if calls != 3 {
+		t.Fatalf("expected 3 progress calls, got %d", calls)
+	}
+	if lastDone != 3 || lastTotal != 3 {
+		t.Fatalf("expected final progress 3/3, got %d/%d", lastDone, lastTotal)
 	}
 }

@@ -90,7 +90,91 @@ tbody tr:hover { background:#f5f9ff; }
 .generic-table { border:1px solid var(--line); border-radius:0 0 12px 12px; overflow:hidden; margin-bottom:24px; }
 .generic-table .table-wrap { max-height:520px; }
 .generic-table td { max-width:360px; overflow:hidden; text-overflow:ellipsis; }
+.rel-toolbar { display:flex; gap:10px; align-items:center; padding:14px 0; flex-wrap:wrap; }
+.rel-toolbar select { min-width:320px; }
+.rel-toolbar input[type=search] { min-width:0; flex:none; width:220px; }
+.rel-summary { color:var(--muted); font-size:13px; margin-bottom:10px; }
+.rel-diagram-wrap { background:var(--surface); border:1px solid var(--line); border-radius:12px;
+  padding:8px; margin-bottom:20px; }
+.rel-svg { display:block; width:100%; height:auto; max-height:440px; }
+.rel-edge { stroke:var(--line); stroke-width:1.5; }
+.rel-node { fill:var(--blue-bg); stroke:var(--blue); stroke-width:1.5; }
+.rel-node-center { fill:var(--blue); stroke:var(--blue); }
+.rel-label { fill:var(--ink); font-size:11px; }
+.rel-label-center { fill:white; font-weight:650; font-size:12px; }
+.rel-more { color:var(--muted); font-size:12px; text-align:center; margin:6px 0 2px; }
 @media (max-width:700px) { header,main { padding-left:18px; padding-right:18px; } }
+`
+
+// relationshipsScript is the Relationships tab's own script body (assumes
+// a const REL_DATA = {projects:[...], repos:[...]} literal precedes it -
+// see renderRelationshipsPanel in instance_panels.go). Kept separate from
+// css/pageTemplate above since it's only emitted when an instance
+// snapshot is present, unlike the always-present shared helpers.
+const relationshipsScript = `
+function relConnections(value) {
+  if (value === "global") {
+    return {
+      title: "Global (repos with no project)",
+      items: REL_DATA.repos.filter(r => !r.project_key || r.project_key === "default"),
+      columns: [{key: "name", label: "Repo"}, {key: "package_type", label: "Package"}, {key: "repo_type", label: "Type"}],
+      labelFn: r => r.name,
+    };
+  }
+  if (value.indexOf("project:") === 0) {
+    const key = value.slice(8);
+    const proj = REL_DATA.projects.find(p => p.key === key);
+    return {
+      title: "Project: " + (proj && proj.display_name ? proj.display_name + " (" + key + ")" : key),
+      items: REL_DATA.repos.filter(r => r.project_key === key),
+      columns: [{key: "name", label: "Repo"}, {key: "package_type", label: "Package"}, {key: "repo_type", label: "Type"}],
+      labelFn: r => r.name,
+    };
+  }
+  return {title: "", items: [], columns: [], labelFn: () => ""};
+}
+
+function updateRelationships() {
+  const select = document.getElementById("rel-select");
+  if (!select) return;
+  const info = relConnections(select.value);
+  document.getElementById("rel-summary").textContent =
+    info.title + " → " + info.items.length.toLocaleString() + " connection(s)";
+  renderRelDiagram("rel-diagram", info.title, info.items, info.labelFn);
+  mountTable("rel-table", info.items, info.columns);
+}
+
+// filterProjectOptions narrows the <select>'s "Projects" optgroup to options
+// whose text matches the search box - Global stays visible, always. Returns
+// the first still-visible project option (or null), so Enter can jump to it
+// when the search has narrowed things to an obvious single match.
+function filterProjectOptions() {
+  const input = document.getElementById("rel-project-search");
+  const select = document.getElementById("rel-select");
+  if (!input || !select) return null;
+  const term = input.value.trim().toLowerCase();
+  const group = select.querySelector('optgroup[label="Projects"]');
+  if (!group) return null;
+  let firstVisible = null;
+  Array.prototype.forEach.call(group.querySelectorAll("option"), option => {
+    const match = !term || option.textContent.toLowerCase().indexOf(term) !== -1;
+    option.hidden = !match;
+    if (match && !firstVisible) firstVisible = option;
+  });
+  return firstVisible;
+}
+
+document.getElementById("rel-select").addEventListener("change", updateRelationships);
+document.getElementById("rel-project-search").addEventListener("input", filterProjectOptions);
+document.getElementById("rel-project-search").addEventListener("keydown", event => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  const match = filterProjectOptions();
+  if (!match) return;
+  document.getElementById("rel-select").value = match.value;
+  updateRelationships();
+});
+updateRelationships();
 `
 
 const pageTemplate = `<!doctype html>
@@ -166,6 +250,42 @@ function mountTable(containerId, data, columns) {
   }
   search.addEventListener("input", draw);
   draw();
+}
+
+function truncateLabel(value, max) {
+  const s = String(value === undefined || value === null ? "" : value);
+  max = max || 20;
+  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+}
+
+// renderRelDiagram draws a simple hub-and-spoke SVG: centerLabel in the
+// middle, up to 24 of items around it (labelFn extracts each item's
+// display text). Plain inline SVG, no charting library - consistent with
+// this whole report being a single dependency-free HTML file.
+function renderRelDiagram(containerId, centerLabel, items, labelFn) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  const cap = 24;
+  const shown = items.slice(0, cap);
+  const cx = 300, cy = 210, r = 165;
+  let svg = '<svg viewBox="0 0 600 420" class="rel-svg" preserveAspectRatio="xMidYMid meet">';
+  shown.forEach((item, i) => {
+    const angle = (2 * Math.PI * i) / Math.max(shown.length, 1) - Math.PI / 2;
+    const x = cx + r * Math.cos(angle);
+    const y = cy + r * Math.sin(angle);
+    svg += '<line x1="' + cx + '" y1="' + cy + '" x2="' + x + '" y2="' + y + '" class="rel-edge"></line>';
+    svg += '<circle cx="' + x + '" cy="' + y + '" r="7" class="rel-node"></circle>';
+    svg += '<text x="' + x + '" y="' + (y - 12) + '" class="rel-label" text-anchor="middle">' +
+      escapeHtml(truncateLabel(labelFn(item), 16)) + '</text>';
+  });
+  svg += '<circle cx="' + cx + '" cy="' + cy + '" r="28" class="rel-node rel-node-center"></circle>';
+  svg += '<text x="' + cx + '" y="' + (cy + 4) + '" class="rel-label rel-label-center" text-anchor="middle">' +
+    escapeHtml(truncateLabel(centerLabel, 22)) + '</text>';
+  svg += '</svg>';
+  if (items.length > shown.length) {
+    svg += '<p class="rel-more">Showing ' + shown.length + ' of ' + items.length + ' - see the table below for the full list.</p>';
+  }
+  container.innerHTML = svg;
 }
 </script>
 <header>

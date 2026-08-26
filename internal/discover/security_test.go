@@ -14,6 +14,10 @@ func TestGetSecurityInfo_ConfiguredAndNotConfigured(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		case "/access/api/v1/ldap":
 			w.WriteHeader(http.StatusOK)
+		case "/access/api/v1/sso/http":
+			w.WriteHeader(http.StatusNotFound)
+		case "/access/api/v1/crowd":
+			w.WriteHeader(http.StatusOK)
 		case "/access/api/v1/oidc":
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode([]map[string]string{
@@ -39,6 +43,12 @@ func TestGetSecurityInfo_ConfiguredAndNotConfigured(t *testing.T) {
 	}
 	if !sec.LDAPConfigured {
 		t.Error("expected LDAPConfigured=true on 200")
+	}
+	if sec.HTTPSSOConfigured {
+		t.Error("expected HTTPSSOConfigured=false on 404")
+	}
+	if !sec.CrowdConfigured {
+		t.Error("expected CrowdConfigured=true on 200")
 	}
 	if len(sec.OIDCProviders) != 1 || sec.OIDCProviders[0].Name != "github" {
 		t.Errorf("unexpected OIDC providers: %+v", sec.OIDCProviders)

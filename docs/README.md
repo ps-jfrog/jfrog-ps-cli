@@ -14,7 +14,7 @@ flags, and the CLI's overall safety model.
 |---|---|
 | [`access`](access.md) | Users, groups, permission targets: list/audit, create, grant-path, add/remove repos, backup, bulk delete |
 | [`cleanup`](cleanup.md) | AQL-driven artifact deletion, bulk repo deletion, inactive-user pruning, source-vs-target reconciliation, Docker tag cleanup, Xray-gated remote-cache cleanup |
-| [`discover`](discover.md) | Repo storage/activity/cleanup-policy/project reporting; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation; a self-contained interactive HTML audit combining all of it |
+| [`discover`](discover.md) | One command with selection flags (not subcommands): repo storage/activity/cleanup-policy/project reporting; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation/platform-config/Xray-config; a self-contained interactive HTML audit combining all of it |
 | [`repos`](repos.md) | List, diff (create-missing-only), full-config sync, bulk delete |
 | [`projects`](projects.md) | List, diff (create missing / optionally delete extra), bulk delete |
 | [`replication`](replication.md) | List/check, create, delete, disable, backup, restore push replication |

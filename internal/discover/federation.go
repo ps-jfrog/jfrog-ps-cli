@@ -40,8 +40,10 @@ func GetFederatedRepoConfig(c *jfclient.Client, repoKey string) (instance.Federa
 
 // GetFederatedRepos fetches member config for every repo in repos whose
 // RepoType is "FEDERATED", concurrently (bounded by concurrency). A single
-// repo's fetch failing is reported in warnings rather than aborting the rest.
-func GetFederatedRepos(c *jfclient.Client, repos []RepoSummary, concurrency int) (federated []instance.FederatedRepo, warnings []string) {
+// repo's fetch failing is reported in warnings rather than aborting the
+// rest. progress, if non-nil, is called after each repo finishes (done is
+// 1-based, total is the number of FEDERATED repos).
+func GetFederatedRepos(c *jfclient.Client, repos []RepoSummary, concurrency int, progress func(done, total int)) (federated []instance.FederatedRepo, warnings []string) {
 	var keys []string
 	for _, r := range repos {
 		if r.RepoType == "FEDERATED" {
@@ -59,6 +61,7 @@ func GetFederatedRepos(c *jfclient.Client, repos []RepoSummary, concurrency int)
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	done := 0
 
 	for i, key := range keys {
 		wg.Add(1)
@@ -68,13 +71,17 @@ func GetFederatedRepos(c *jfclient.Client, repos []RepoSummary, concurrency int)
 			defer func() { <-sem }()
 
 			fed, err := GetFederatedRepoConfig(c, key)
+			mu.Lock()
 			if err != nil {
-				mu.Lock()
 				warnings = append(warnings, err.Error())
-				mu.Unlock()
-				return
+			} else {
+				results[i] = &fed
 			}
-			results[i] = &fed
+			done++
+			if progress != nil {
+				progress(done, len(keys))
+			}
+			mu.Unlock()
 		}(i, key)
 	}
 	wg.Wait()

@@ -30,13 +30,21 @@ func TestGetProjects_FillsRepoCountFromRepos(t *testing.T) {
 		t.Fatalf("expected 2 projects, got %d", len(projects))
 	}
 	byKey := map[string]int{}
+	repoLists := map[string][]string{}
 	for _, p := range projects {
 		byKey[p.Key] = p.RepoCount
+		repoLists[p.Key] = p.Repos
 	}
 	if byKey["team-a"] != 2 {
 		t.Errorf("expected team-a RepoCount 2, got %d", byKey["team-a"])
 	}
 	if byKey["team-b"] != 0 {
 		t.Errorf("expected team-b RepoCount 0, got %d", byKey["team-b"])
+	}
+	if got := repoLists["team-a"]; len(got) != 2 || got[0] != "r1" || got[1] != "r2" {
+		t.Errorf("expected team-a Repos [r1 r2] (sorted), got %v", got)
+	}
+	if len(repoLists["team-b"]) != 0 {
+		t.Errorf("expected team-b Repos empty, got %v", repoLists["team-b"])
 	}
 }

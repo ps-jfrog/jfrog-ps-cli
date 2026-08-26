@@ -2,13 +2,15 @@ package discover
 
 import (
 	"fmt"
+	"sort"
 
 	"jfrogpscli/internal/instance"
 	"jfrogpscli/internal/jfclient"
 )
 
 // GetProjects fetches every JFrog Project (GET /access/api/v1/projects) and
-// fills each one's RepoCount by counting repos whose ProjectKey matches.
+// fills each one's Repos (and RepoCount, len(Repos)) by matching repos'
+// ProjectKey - no extra API call needed, storageinfo already carries it.
 func GetProjects(c *jfclient.Client, repos []RepoSummary) ([]instance.Project, error) {
 	resp, err := c.Get("/access/api/v1/projects")
 	if err != nil {
@@ -28,21 +30,26 @@ func GetProjects(c *jfclient.Client, repos []RepoSummary) ([]instance.Project, e
 		return nil, fmt.Errorf("decode projects response: %w", err)
 	}
 
-	repoCounts := map[string]int{}
+	repoKeys := map[string][]string{}
 	for _, r := range repos {
 		if r.ProjectKey != "" {
-			repoCounts[r.ProjectKey]++
+			repoKeys[r.ProjectKey] = append(repoKeys[r.ProjectKey], r.RepoKey)
 		}
+	}
+	for key := range repoKeys {
+		sort.Strings(repoKeys[key])
 	}
 
 	projects := make([]instance.Project, 0, len(raw))
 	for _, p := range raw {
+		projectRepos := repoKeys[p.ProjectKey]
 		projects = append(projects, instance.Project{
 			Key:               p.ProjectKey,
 			DisplayName:       p.DisplayName,
 			Description:       p.Description,
 			StorageQuotaBytes: p.StorageQuotaBytes,
-			RepoCount:         repoCounts[p.ProjectKey],
+			RepoCount:         len(projectRepos),
+			Repos:             projectRepos,
 		})
 	}
 	return projects, nil

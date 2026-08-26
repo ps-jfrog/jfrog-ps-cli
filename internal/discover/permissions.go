@@ -90,8 +90,10 @@ func getPermissionDetail(c *jfclient.Client, name string) (instance.PermissionTa
 // maxTargets of their details concurrently (bounded by concurrency).
 // truncated is true only when the cap cut the listing short. A single
 // target's detail failing does not abort the rest - it's reported back in
-// warnings and omitted from the result.
-func GetPermissionTargets(c *jfclient.Client, maxTargets, concurrency int) (targets []instance.PermissionTarget, truncated bool, warnings []string, err error) {
+// warnings and omitted from the result. progress, if non-nil, is called
+// after each target finishes (done is 1-based, total is len(names) after
+// truncation).
+func GetPermissionTargets(c *jfclient.Client, maxTargets, concurrency int, progress func(done, total int)) (targets []instance.PermissionTarget, truncated bool, warnings []string, err error) {
 	names, err := listPermissionNames(c)
 	if err != nil {
 		return nil, false, nil, err
@@ -109,6 +111,7 @@ func GetPermissionTargets(c *jfclient.Client, maxTargets, concurrency int) (targ
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	done := 0
 
 	for i, name := range names {
 		wg.Add(1)
@@ -118,13 +121,17 @@ func GetPermissionTargets(c *jfclient.Client, maxTargets, concurrency int) (targ
 			defer func() { <-sem }()
 
 			detail, err := getPermissionDetail(c, name)
+			mu.Lock()
 			if err != nil {
-				mu.Lock()
 				warnings = append(warnings, err.Error())
-				mu.Unlock()
-				return
+			} else {
+				results[i] = &detail
 			}
-			results[i] = &detail
+			done++
+			if progress != nil {
+				progress(done, len(names))
+			}
+			mu.Unlock()
 		}(i, name)
 	}
 	wg.Wait()

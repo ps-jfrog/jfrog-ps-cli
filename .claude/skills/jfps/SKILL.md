@@ -81,7 +81,7 @@ not merely to "check" or "see" something.
 
 | Command | Covers | Mutates? |
 |---|---|---|
-| `jfps discover` | Repo storage/activity/cleanup-policy/project reporting; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation; self-contained HTML audit | No — fully read-only |
+| `jfps discover` | One command, flags select the piece(s) (not subcommands): repo storage/activity/cleanup-policy/project reporting; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation/platform-config/Xray-config; self-contained HTML audit | No — fully read-only |
 | `jfps access` | Users, groups, permission targets: list/audit, create, grant-path, add/remove repos, backup, bulk delete | Yes (dry-run default) |
 | `jfps cleanup` | AQL-driven artifact deletion, bulk repo deletion, inactive-user pruning, source-vs-target reconciliation, Docker tag cleanup, Xray-gated remote-cache cleanup | Yes (dry-run default) |
 | `jfps repos` | List, diff (create-missing-only), full-config sync, bulk delete | List: no. Diff/sync/delete: yes |
@@ -92,59 +92,102 @@ not merely to "check" or "see" something.
 | `jfps xray` | Index status/toggle/reindex, report list/delete, policy/watch/ignore-rule sync | Mixed — check subcommand |
 
 Run `jfps <command>` with no subcommand, or `jfps <command> <subcommand> -h`,
-for the exact flags. Full per-command flag/behavior reference:
+for the exact flags (`jfps discover -h` for that one - it has no
+subcommands, just selection flags, see below). Full per-command flag/behavior reference:
 [`docs/`](../../../docs/README.md) (one page per command, with a sequence
 diagram of the actual HTTP calls each subcommand makes).
 
-## `discover` — the read-only reporting group
+## `discover` — the read-only reporting command
 
-This is the group to reach for whenever the ask is "audit," "report on,"
+This is the command to reach for whenever the ask is "audit," "report on,"
 "what repos/users/policies exist," or "give me a dashboard" — not "clean
-up" or "delete" (that's `cleanup`/`access`). All four subcommands are
-read-only; `analyze` makes no network calls at all.
+up" or "delete" (that's `cleanup`/`access`). It is entirely read-only; the
+analyze step makes no network calls at all.
 
-**Output format choice, and why:** `repos`/`policies` write **CSV** (flat
-per-row data — opens directly in Excel/Sheets, and it's what `analyze`
-parses). `instance` writes **JSON**, not YAML — it's machine-generated
-hierarchical data (nested users/groups/permissions), and JSON avoids YAML's
-implicit-typing gotchas (`no`/`yes` becoming booleans, a version string like
-`3.10` becoming a number) that a hand-rolled parser would otherwise have to
-guard against.
+**Not subcommands — one command, boolean selection flags**, so one
+invocation can do several pieces together:
 
-Recommended sequence — each command prints a "Next:" hint block to stderr
-telling you exactly this:
+```sh
+jfps discover --repos --instance --analyze --url ... --token ...
+# or the shorthand for all four:
+jfps discover --all --url ... --token ...
+```
+
+Flags always run in this fixed order regardless of the order you pass them:
+**`--repos` → `--policies` → `--instance` → `--analyze`** — so `--analyze`
+in the same invocation picks up whatever `--repos`/`--instance` just wrote
+(via `--repos-csv`/`--instance-json`, both with sane defaults).
+
+**Output format choice, and why:** `--repos`/`--policies` write **CSV** (flat
+per-row data — opens directly in Excel/Sheets, and it's what `--analyze`
+parses). `--instance` writes **JSON**, not YAML — it's machine-generated
+hierarchical data (nested users/groups/permissions/policies), and JSON avoids
+YAML's implicit-typing gotchas (`no`/`yes` becoming booleans, a version
+string like `3.10` becoming a number) that a hand-rolled parser would
+otherwise have to guard against.
+
+Run individually - each prints a "Next:" hint block to stderr telling you
+exactly this:
 
 ```sh
 # 1. Per-repo storage/activity + cleanup-policy detail + project assignment
-jfps discover repos --url ... --token ... --csv report.csv
+jfps discover --repos --url ... --token ... --repos-csv report.csv
 #    On a large/shared instance, scope first: --include 'team-a-*'
 #    (3 AQL calls per non-empty repo - be considerate)
 
 # 2. Instance-wide: versions, storage, auth/signing keys, users, groups,
-#    permission targets, projects, replication, federation
-jfps discover instance --url ... --token ... --output instance.json
+#    permission targets, projects, replication, federation, platform config,
+#    Xray policy/watch/ignore-rule/curation config
+jfps discover --instance --url ... --token ... --instance-json instance.json
 
 # 3. Combine into one self-contained interactive HTML audit (no network calls)
-jfps discover analyze --input report.csv --instance instance.json --output audit.html
+jfps discover --analyze --repos-csv report.csv --instance-json instance.json --audit-html audit.html
 ```
 
-`analyze` works with just `--input` (a single "Repos" tab: findings +
-explorer). Adding `--instance` adds four more tabs: Overview (versions,
-storage, auth methods, a **highlighted callout if repository signing keys
-are configured** — metadata only, never key material), Access (searchable
-Users/Groups/Permission-Targets tables), Projects (with repo counts), and
-Federation & Replication.
+`--analyze` works with just a repos CSV (a single "Repos" tab: findings +
+explorer). Adding an instance snapshot adds eight more tabs: **All
+Findings** (every flagged resource, of any type, in one searchable table —
+open this one first), Overview (versions, storage, auth methods, a
+**highlighted callout if repository signing keys are configured** —
+metadata only, never key material), Access (searchable
+Users/Groups/Permission-Targets tables), Projects (repo counts; click a
+row for roles/environments/members), **Relationships** (project-to-repo
+view: pick Global or a project, with a search box to narrow the project
+list — a hub-and-spoke SVG diagram plus a full searchable table of that
+project's repos, or every repo with no project for Global; the direct
+answer to "which repos belong to this project"), Federation & Replication, Platform
+Config (roles/tokens/certificates/property-sets/proxies/backups/
+archive-cleanup-policies/workers/webhooks, plus mail-server/password-policy/
+lockout-policy/reverse-proxy/license/trash-retention as stat cards), and
+Xray (policies/watches/ignore-rules/curation policies/settings — shows a
+plain notice instead if Xray isn't licensed).
 
-`discover repos` findings (computed by `analyze`, each skipped rather than
+`--repos` findings (computed by `--analyze`, each skipped rather than
 mis-flagged if its source column is absent): `empty`, `stale` (no
 push/pull inside `--stale-days`, default 180), `huge`/`massive-files` (over
 `--huge-gb`/`--massive-files`), `naming-nonconformant`/`uppercase`/
 `underscore`/`very-long-name`, `no-cleanup-policy`, `multi-policy-match`.
 
-`discover policies` is the drill-down companion to `repos`'s merged
+Cross-resource findings on the **All Findings** tab (instance data only):
+`no-principals`/`wildcard-scope` (permission targets), `empty-project`,
+`single-member` (a federated repo with <2 enabled members), `disabled` (a
+configured-but-disabled replication), `non-expiring` (a scoped token with
+no expiry), `inactive` (an Xray watch that's off), `no-rules` (an Xray
+policy with no rules configured).
+
+Every concurrent-bounded stage (`--repos`' AQL sweep; `--instance`'s
+permission targets, project detail, federated repos) prints a live text
+progress bar to stderr - hand-rolled, no dependency, consistent with the
+rest of this zero-dependency CLI.
+
+`--policies` is the drill-down companion to `--repos`'s merged
 `cleanup_policy_*` columns — one row per repo × matched policy (or a blank
 row when nothing matches), for spotting uncovered or ambiguously-overlapping
 repos that a single joined CSV cell would hide.
+
+**Never captured, by design, even where the underlying API returns it:**
+token/webhook secrets, license hashes, signing-key material (public or
+private), proxy/mail-server passwords.
 
 ## Version / cutting a release (maintainers)
 

@@ -10,23 +10,36 @@ import (
 // CollectOptions bounds the size and concurrency of an instance-wide
 // collection so it stays reasonable on large instances.
 type CollectOptions struct {
-	Concurrency    int // for permission-target detail and federated-repo config fetches
+	Concurrency    int // for permission-target/federated-repo/project-detail fetches
 	MaxUsers       int // 0 = unlimited
 	MaxGroups      int // 0 = unlimited
 	MaxPermissions int // 0 = unlimited
+	// ProjectDetail additionally fetches each project's roles/environments
+	// (and, opportunistically, member users/groups) - 2-4 extra calls per
+	// project, bounded by Concurrency. Defaults to true; set false to skip
+	// on an instance with a very large number of projects.
+	ProjectDetail bool
+	// Progress, if non-nil, is called as each concurrent-bounded stage
+	// (permission targets, project detail, federated repos) makes
+	// progress: stage names it, done/total drive a progress bar. Stages
+	// with nothing to do (e.g. no federated repos) are never called.
+	Progress func(stage string, done, total int)
 }
 
 // DefaultCollectOptions returns sane defaults: modest concurrency, and caps
 // high enough to cover most PS-scale instances without silently truncating.
 func DefaultCollectOptions() CollectOptions {
-	return CollectOptions{Concurrency: 8, MaxUsers: 5000, MaxGroups: 5000, MaxPermissions: 2000}
+	return CollectOptions{Concurrency: 8, MaxUsers: 5000, MaxGroups: 5000, MaxPermissions: 2000, ProjectDetail: true}
 }
 
 // CollectInstance gathers a full instance.Snapshot: component versions,
-// storage summary, authentication/signing-key configuration, users,
-// groups, permission-target access, projects, and replication/federation
-// config. repos (typically from ListRepoStorage) drives project repo
-// counts and which repos to fetch federation config for.
+// storage summary, authentication/signing-key configuration, platform
+// configuration (roles, tokens, certificates, proxies, backups, and other
+// singleton config), users, groups, permission-target access, projects
+// (optionally with role/membership detail), replication/federation
+// config, and Xray policy/watch/ignore-rule/curation configuration. repos
+// (typically from ListRepoStorage) drives project repo counts and which
+// repos to fetch federation config for.
 //
 // Only the Artifactory version fetch is fatal - every other piece
 // soft-fails into Snapshot.Warnings so one broken/unlicensed endpoint
@@ -57,7 +70,14 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 		snap.Groups, snap.GroupsTruncated = groups, truncated
 	}
 
-	if targets, truncated, warnings, err := GetPermissionTargets(c, opts.MaxPermissions, opts.Concurrency); err != nil {
+	stageProgress := func(stage string) func(done, total int) {
+		if opts.Progress == nil {
+			return nil
+		}
+		return func(done, total int) { opts.Progress(stage, done, total) }
+	}
+
+	if targets, truncated, warnings, err := GetPermissionTargets(c, opts.MaxPermissions, opts.Concurrency, stageProgress("Permissions")); err != nil {
 		snap.Warnings = append(snap.Warnings, fmt.Sprintf("permission targets: %v", err))
 	} else {
 		snap.Permissions, snap.PermissionsTruncated = targets, truncated
@@ -67,6 +87,9 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 	if projects, err := GetProjects(c, repos); err != nil {
 		snap.Warnings = append(snap.Warnings, fmt.Sprintf("projects: %v", err))
 	} else {
+		if opts.ProjectDetail {
+			EnrichProjectDetail(c, projects, opts.Concurrency, stageProgress("Project detail"))
+		}
 		snap.Projects = projects
 	}
 
@@ -76,9 +99,17 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 		snap.Replications = replications
 	}
 
-	federated, fedWarnings := GetFederatedRepos(c, repos, opts.Concurrency)
+	federated, fedWarnings := GetFederatedRepos(c, repos, opts.Concurrency, stageProgress("Federated repos"))
 	snap.FederatedRepos = federated
 	snap.Warnings = append(snap.Warnings, fedWarnings...)
+
+	platformCfg, platformWarnings := GetPlatformConfig(c)
+	snap.Platform = platformCfg
+	snap.Warnings = append(snap.Warnings, platformWarnings...)
+
+	xrayCfg, xrayWarnings := GetXrayConfig(c)
+	snap.Xray = xrayCfg
+	snap.Warnings = append(snap.Warnings, xrayWarnings...)
 
 	return snap, nil
 }

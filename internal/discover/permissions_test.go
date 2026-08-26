@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"jfrogpscli/internal/instance"
@@ -44,7 +45,7 @@ func TestGetPermissionTargets_ListsAndFetchesDetail(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	targets, truncated, warnings, err := GetPermissionTargets(testClient(t, srv), 0, 4)
+	targets, truncated, warnings, err := GetPermissionTargets(testClient(t, srv), 0, 4, nil)
 	if err != nil {
 		t.Fatalf("GetPermissionTargets returned error: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestGetPermissionTargets_CapTruncates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	targets, truncated, _, err := GetPermissionTargets(testClient(t, srv), 2, 4)
+	targets, truncated, _, err := GetPermissionTargets(testClient(t, srv), 2, 4, nil)
 	if err != nil {
 		t.Fatalf("GetPermissionTargets returned error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestGetPermissionTargets_OneFailureDoesNotAbortOthers(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	targets, _, warnings, err := GetPermissionTargets(testClient(t, srv), 0, 4)
+	targets, _, warnings, err := GetPermissionTargets(testClient(t, srv), 0, 4, nil)
 	if err != nil {
 		t.Fatalf("GetPermissionTargets returned error: %v", err)
 	}
@@ -127,5 +128,37 @@ func TestGetPermissionTargets_OneFailureDoesNotAbortOthers(t *testing.T) {
 	}
 	if len(warnings) != 1 {
 		t.Fatalf("expected 1 warning for the broken target, got %v", warnings)
+	}
+}
+
+func TestGetPermissionTargets_ReportsProgress(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/access/api/v2/permissions" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"permissions": []map[string]string{{"name": "p1"}, {"name": "p2"}},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"resources": map[string]interface{}{}})
+	}))
+	defer srv.Close()
+
+	var mu sync.Mutex
+	var calls, lastDone, lastTotal int
+	_, _, _, err := GetPermissionTargets(testClient(t, srv), 0, 4, func(done, total int) {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		lastDone, lastTotal = done, total
+	})
+	if err != nil {
+		t.Fatalf("GetPermissionTargets returned error: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected 2 progress calls, got %d", calls)
+	}
+	if lastDone != 2 || lastTotal != 2 {
+		t.Fatalf("expected final progress 2/2, got %d/%d", lastDone, lastTotal)
 	}
 }

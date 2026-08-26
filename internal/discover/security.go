@@ -29,6 +29,18 @@ func GetSecurityInfo(c *jfclient.Client) (instance.SecurityInfo, []string) {
 		sec.LDAPConfigured = configured
 	}
 
+	if configured, err := probeConfigured(c, "/access/api/v1/sso/http"); err != nil {
+		warnings = append(warnings, fmt.Sprintf("http sso config: %v", err))
+	} else {
+		sec.HTTPSSOConfigured = configured
+	}
+
+	if configured, err := probeConfigured(c, "/access/api/v1/crowd"); err != nil {
+		warnings = append(warnings, fmt.Sprintf("crowd config: %v", err))
+	} else {
+		sec.CrowdConfigured = configured
+	}
+
 	oidcResp, err := c.Get("/access/api/v1/oidc")
 	if err != nil {
 		warnings = append(warnings, fmt.Sprintf("oidc providers: %v", err))
