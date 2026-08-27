@@ -99,11 +99,13 @@ func TestRender_WithInstance_AddsTabsAndPanels(t *testing.T) {
 	}
 
 	// Overview, Repos, Projects, Access, Federation & Replication, Platform
-	// Config, Xray, All Findings, Relationships, in that order.
+	// Config, Xray, All Findings, Relationships, Wave Planning, Migration
+	// Workflow, in that order.
 	order := []string{
-		`data-report-tab="overview"`, `data-report-tab="repos"`, `data-report-tab="projects"`,
-		`data-report-tab="access"`, `data-report-tab="fedrep"`, `data-report-tab="platform"`,
-		`data-report-tab="xray"`, `data-report-tab="all-findings"`, `data-report-tab="relationships"`,
+		`data-report-tab="overview"`, `data-report-tab="repos"`,
+		`data-report-tab="projects"`, `data-report-tab="access"`, `data-report-tab="fedrep"`,
+		`data-report-tab="platform"`, `data-report-tab="xray"`, `data-report-tab="all-findings"`,
+		`data-report-tab="relationships"`, `data-report-tab="waves"`, `data-report-tab="migration"`,
 	}
 	last := -1
 	for _, tab := range order {
@@ -112,7 +114,7 @@ func TestRender_WithInstance_AddsTabsAndPanels(t *testing.T) {
 			t.Fatalf("tab %q not found", tab)
 		}
 		if idx < last {
-			t.Fatalf("expected tab order Overview, Repos, Projects, Access, Federation & Replication, Platform Config, Xray, All Findings, Relationships - %q appeared out of order", tab)
+			t.Fatalf("expected tab order Overview, Repos, Projects, Access, Federation & Replication, Platform Config, Xray, All Findings, Relationships, Wave Planning, Migration Workflow - %q appeared out of order", tab)
 		}
 		last = idx
 	}
@@ -152,8 +154,14 @@ func TestRender_WithoutInstance_NoTabsPanelsOrLeaks(t *testing.T) {
 	if strings.Contains(html, "data-report-tab=\"overview\"") {
 		t.Fatal("expected no Overview tab without instance data")
 	}
-	if strings.Count(html, "</script>") != 2 {
-		t.Fatalf("expected exactly 2 </script> tags (shared helpers + main) without instance data, got %d", strings.Count(html, "</script>"))
+	if strings.Count(html, "</script>") != 4 {
+		t.Fatalf("expected exactly 4 </script> tags (shared helpers + wave planning + migration workflow + main) without instance data, got %d", strings.Count(html, "</script>"))
+	}
+	if !strings.Contains(html, `data-report-tab="waves"`) {
+		t.Fatal("expected the Wave Planning tab even without instance data")
+	}
+	if !strings.Contains(html, `data-report-tab="migration"`) {
+		t.Fatal("expected the Migration Workflow tab even without instance data")
 	}
 	if !strings.Contains(html, `<section class="report-panel active" data-report-panel="repos">`) {
 		t.Error("expected Repos to be the default active panel without instance data")

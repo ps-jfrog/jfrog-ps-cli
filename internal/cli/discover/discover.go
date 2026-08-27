@@ -59,7 +59,7 @@ func Run(args []string) int {
 	doInstance := fs.Bool("instance", false, "Fetch the instance-wide snapshot (versions, security, access, projects, platform, Xray) -> --instance-json")
 	doAnalyze := fs.Bool("analyze", false, "Render the self-contained HTML audit from --repos-csv (+ --instance-json if present) -> --audit-html")
 	doAll := fs.Bool("all", false, "Shorthand for --repos --policies --instance --analyze")
-	parallel := fs.Bool("parallel", true, "Run --repos/--policies/--instance concurrently instead of sequentially when more than one is selected - faster, since they're independent network calls against the same JPD. Progress bars are suppressed while running concurrently (multiple live bars would garble the terminal); set false to run sequentially with full progress bars")
+	parallel := fs.Bool("parallel", true, "Run --repos/--policies/--instance concurrently instead of sequentially when more than one is selected - faster, since they're independent network calls against the same JPD (each still gets its own live progress bar); set false to run sequentially instead")
 
 	// --- output/input path flags (shared between generating and analyzing) ---
 	outputDir := fs.String("output", "output", "Base output folder; a subfolder named after the JPD's hostname (e.g. 'output/psazuse') is created under it and used for any of the paths below left at their default")
@@ -134,22 +134,24 @@ func Run(args []string) int {
 			selected++
 		}
 	}
-	// Only worth parallelizing (and only safe to show live progress bars
-	// for) when a single piece runs - two or more live \r-based bars
-	// updating the same terminal concurrently would garble each other.
 	runConcurrently := *parallel && selected > 1
-	showProgress := !runConcurrently
+
+	// One shared bar block for the whole invocation: each piece gets its
+	// own labeled line, stacked and redrawn together, so running several
+	// pieces concurrently doesn't garble the terminal the way independent
+	// \r-based bars would.
+	mb := newMultiBar()
 
 	runRepos := func() int {
-		return doReposReport(client, *reposCSV, *concurrency, *withPolicies, splitList(*include), splitList(*exclude), showProgress)
+		return doReposReport(client, *reposCSV, *concurrency, *withPolicies, splitList(*include), splitList(*exclude), mb)
 	}
-	runPolicies := func() int { return doPoliciesReport(client, *policiesCSV) }
+	runPolicies := func() int { return doPoliciesReport(client, *policiesCSV, mb) }
 	runInstance := func() int {
-		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail, showProgress)
+		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail, mb)
 	}
 
 	if runConcurrently {
-		fmt.Fprintln(os.Stderr, "discover: running repos/policies/instance concurrently (pass --parallel=false to run sequentially with full progress bars)")
+		mb.Log("discover: running repos/policies/instance concurrently (pass --parallel=false to run sequentially instead)")
 		var wg sync.WaitGroup
 		codes := make(chan int, selected)
 		launch := func(fn func() int) {
@@ -205,7 +207,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "Usage: jfps discover [--repos] [--policies] [--instance] [--analyze] [--all] [flags]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Flags select which piece(s) to run - repos/policies/instance run concurrently by default when more")
-	fmt.Fprintln(os.Stderr, "than one is selected (--parallel=false for sequentially, with full progress bars), and analyze")
+	fmt.Fprintln(os.Stderr, "than one is selected, each with its own live progress bar (--parallel=false to run sequentially instead), and analyze")
 	fmt.Fprintln(os.Stderr, "always runs last, so 'discover --repos --instance --analyze' generates the report and snapshot,")
 	fmt.Fprintln(os.Stderr, "then renders the combined HTML audit, all in one invocation.")
 	fmt.Fprintln(os.Stderr, "")
@@ -268,41 +270,39 @@ func splitList(s string) []string {
 // repos
 // ---------------------------------------------------------------------------
 
-func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, showProgress bool) int {
+func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, mb *multiBar) int {
 	opts := discover.ReportOptions{
 		Concurrency:  concurrency,
 		WithPolicies: withPolicies,
 		Include:      include,
 		Exclude:      exclude,
-	}
-	if showProgress {
-		opts.Progress = func(done, total int) { progressBar("Repos", done, total) }
+		Progress:     func(done, total int) { mb.Update("Repos", done, total) },
 	}
 
 	rows, warnings, err := discover.Report(client, opts)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	for _, w := range warnings {
-		fmt.Fprintf(os.Stderr, "discover --repos: warning: %s\n", w)
+		mb.Logf("discover --repos: warning: %s\n", w)
 	}
 
 	if err := ensureParentDir(csvPath); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	f, err := os.Create(csvPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	defer f.Close()
 	if err := discover.WriteReportCSV(f, rows, withPolicies); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "Wrote %d repo(s) to %s\n", len(rows), csvPath)
+	mb.Logf("Wrote %d repo(s) to %s\n", len(rows), csvPath)
 	return 0
 }
 
@@ -310,33 +310,33 @@ func doReposReport(client *jfclient.Client, csvPath string, concurrency int, wit
 // policies
 // ---------------------------------------------------------------------------
 
-func doPoliciesReport(client *jfclient.Client, csvPath string) int {
+func doPoliciesReport(client *jfclient.Client, csvPath string, mb *multiBar) int {
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	policies, err := discover.ListCleanupPolicies(client)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 
 	if err := ensureParentDir(csvPath); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	f, err := os.Create(csvPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	defer f.Close()
 	if err := discover.WritePoliciesCSV(f, repos, policies); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "Wrote %d repo(s), %d policy/policies to %s\n", len(repos), len(policies), csvPath)
+	mb.Logf("Wrote %d repo(s), %d policy/policies to %s\n", len(repos), len(policies), csvPath)
 	return 0
 }
 
@@ -344,15 +344,15 @@ func doPoliciesReport(client *jfclient.Client, csvPath string) int {
 // instance
 // ---------------------------------------------------------------------------
 
-func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail, showProgress bool) int {
-	fmt.Fprintln(os.Stderr, "discover --instance: fetching repo list (for project repo-counts and federation targets)...")
+func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool, mb *multiBar) int {
+	mb.Log("discover --instance: fetching repo list (for project repo-counts and federation targets)...")
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 
-	fmt.Fprintln(os.Stderr, "discover --instance: collecting system, security, users, groups, permissions, projects, replication, federation, platform, xray...")
+	mb.Log("discover --instance: collecting system, security, users, groups, permissions, projects, replication, federation, platform, xray...")
 	// Start from the defaults and override just what the flags set, rather
 	// than a bespoke literal - so a future CollectOptions field picks up a
 	// sane default here automatically instead of silently zero-valuing
@@ -363,45 +363,43 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 	collectOpts.MaxGroups = maxGroups
 	collectOpts.MaxPermissions = maxPermissions
 	collectOpts.ProjectDetail = projectDetail
-	if showProgress {
-		collectOpts.Progress = func(stage string, done, total int) { progressBar(stage, done, total) }
-	}
+	collectOpts.Progress = func(stage string, done, total int) { mb.Update(stage, done, total) }
 
 	snap, err := discover.CollectInstance(client, repos, collectOpts)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	snap.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 
 	for _, w := range snap.Warnings {
-		fmt.Fprintf(os.Stderr, "discover --instance: warning: %s\n", w)
+		mb.Logf("discover --instance: warning: %s\n", w)
 	}
 	if snap.UsersTruncated {
-		fmt.Fprintf(os.Stderr, "discover --instance: users list truncated at --max-users=%d\n", maxUsers)
+		mb.Logf("discover --instance: users list truncated at --max-users=%d\n", maxUsers)
 	}
 	if snap.GroupsTruncated {
-		fmt.Fprintf(os.Stderr, "discover --instance: groups list truncated at --max-groups=%d\n", maxGroups)
+		mb.Logf("discover --instance: groups list truncated at --max-groups=%d\n", maxGroups)
 	}
 	if snap.PermissionsTruncated {
-		fmt.Fprintf(os.Stderr, "discover --instance: permission targets truncated at --max-permissions=%d\n", maxPermissions)
+		mb.Logf("discover --instance: permission targets truncated at --max-permissions=%d\n", maxPermissions)
 	}
 
 	if err := ensureParentDir(outputPath); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	f, err := os.Create(outputPath)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
 	defer f.Close()
 	if err := instance.WriteJSON(f, snap); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		mb.Log("error:", err)
 		return 1
 	}
-	fmt.Fprintf(os.Stderr, "Wrote %s (%d users, %d groups, %d permission targets, %d projects, %d replications, %d federated repos)\n",
+	mb.Logf("Wrote %s (%d users, %d groups, %d permission targets, %d projects, %d replications, %d federated repos)\n",
 		outputPath, len(snap.Users), len(snap.Groups), len(snap.Permissions), len(snap.Projects), len(snap.Replications), len(snap.FederatedRepos))
 	return 0
 }

@@ -75,15 +75,35 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
     <div class="stat"%s><strong>%s</strong><span>%s</span></div>`, border, htmlEscape(s.Value), htmlEscape(s.Label))
 	}
 
+	// Overview is the default tab once there's an instance snapshot to show
+	// one for; without it, Repos stays the default, exactly as before this
+	// report had an Overview tab.
+	reposActiveClass := ""
+	if ro.Instance == nil {
+		reposActiveClass = " active"
+	}
+
+	// Repos, Wave Planning, and Migration Workflow are always present, with
+	// or without an instance snapshot - neither needs anything beyond the
+	// repo rows/findings already embedded for the Repos tab. Both are
+	// ordered last (Wave Planning feeds Migration Workflow's wave-based
+	// scope, so Migration Workflow follows it).
+	reposNav := fmt.Sprintf(`<button class="report-tab%s" data-report-tab="repos">Repos</button>`, reposActiveClass)
+	wavesNav := `<button class="report-tab" data-report-tab="waves">Wave Planning</button>`
+	wavesPanel := "\n  <section class=\"report-panel\" data-report-panel=\"waves\">\n" + wavePlanningPanel + "\n  </section>\n"
+	migrationNav := `<button class="report-tab" data-report-tab="migration">Migration Workflow</button>`
+	migrationPanel := "\n  <section class=\"report-panel\" data-report-panel=\"migration\">\n" + migrationWorkflowPanel + "\n  </section>\n"
+
 	navTabsHTML, extraPanelsHTML, err := renderInstanceTabs(ro.Instance)
 	if err != nil {
 		return "", err
 	}
 	if navTabsHTML != "" {
-		// Order: Overview, Repos, [Projects/Access/Fedrep/Platform/Xray from
-		// renderInstanceTabs], All Findings, Relationships. Overview is built
-		// here rather than by renderInstanceTabs because it needs the repo
-		// count, which isn't part of an instance.Snapshot.
+		// Order: Overview, Repos, [Projects/Access/Fedrep/Platform/Xray
+		// from renderInstanceTabs], All Findings, Relationships, Wave
+		// Planning, Migration Workflow. Overview is built here rather than
+		// by renderInstanceTabs because it needs the repo count, which
+		// isn't part of an instance.Snapshot.
 		overviewContent, err := renderOverviewPanel(ro.Instance, len(rows))
 		if err != nil {
 			return "", fmt.Errorf("render overview panel: %w", err)
@@ -108,18 +128,11 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		relationshipsNav := `<button class="report-tab" data-report-tab="relationships">Relationships</button>`
 		relationshipsPanel := "\n  <section class=\"report-panel\" data-report-panel=\"relationships\">\n" + relationshipsContent + "\n  </section>\n"
 
-		navTabsHTML = overviewNav +
-			`<button class="report-tab" data-report-tab="repos">Repos</button>` +
-			navTabsHTML + allFindingsNav + relationshipsNav
-		extraPanelsHTML = overviewPanel + extraPanelsHTML + allFindingsPanel + relationshipsPanel
-	}
-
-	// Overview is the default tab once there's an instance snapshot to show
-	// one for; without it, Repos (the only tab that always exists) stays
-	// the default, exactly as before this report had an Overview tab.
-	reposActiveClass := ""
-	if ro.Instance == nil {
-		reposActiveClass = " active"
+		navTabsHTML = overviewNav + reposNav + navTabsHTML + allFindingsNav + relationshipsNav + wavesNav + migrationNav
+		extraPanelsHTML = overviewPanel + extraPanelsHTML + allFindingsPanel + relationshipsPanel + wavesPanel + migrationPanel
+	} else {
+		navTabsHTML = reposNav + wavesNav + migrationNav
+		extraPanelsHTML = wavesPanel + migrationPanel
 	}
 
 	var headerInstanceHTML string

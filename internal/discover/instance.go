@@ -58,13 +58,13 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 	snap.Security = secInfo
 	snap.Warnings = append(snap.Warnings, secWarnings...)
 
-	if users, truncated, err := GetUsers(c, opts.MaxUsers); err != nil {
+	if users, truncated, err := GetUsers(c, opts.MaxUsers, sysInfo.ArtifactoryVersion); err != nil {
 		snap.Warnings = append(snap.Warnings, fmt.Sprintf("users: %v", err))
 	} else {
 		snap.Users, snap.UsersTruncated = users, truncated
 	}
 
-	if groups, truncated, err := GetGroups(c, opts.MaxGroups); err != nil {
+	if groups, truncated, err := GetGroups(c, opts.MaxGroups, sysInfo.ArtifactoryVersion); err != nil {
 		snap.Warnings = append(snap.Warnings, fmt.Sprintf("groups: %v", err))
 	} else {
 		snap.Groups, snap.GroupsTruncated = groups, truncated
@@ -77,7 +77,7 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 		return func(done, total int) { opts.Progress(stage, done, total) }
 	}
 
-	if targets, truncated, warnings, err := GetPermissionTargets(c, opts.MaxPermissions, opts.Concurrency, stageProgress("Permissions")); err != nil {
+	if targets, truncated, warnings, err := GetPermissionTargets(c, opts.MaxPermissions, opts.Concurrency, sysInfo.ArtifactoryVersion, stageProgress("Permissions")); err != nil {
 		snap.Warnings = append(snap.Warnings, fmt.Sprintf("permission targets: %v", err))
 	} else {
 		snap.Permissions, snap.PermissionsTruncated = targets, truncated

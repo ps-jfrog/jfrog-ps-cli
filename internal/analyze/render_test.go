@@ -28,10 +28,12 @@ func TestRender_ProducesValidEmbeddedJSONAndNoLeftoverPlaceholders(t *testing.T)
 		t.Fatalf("found unreplaced template placeholder: %q", m)
 	}
 	// The shared-helpers block (escapeHtml/mountTable/etc., which must load
-	// before <main> - see the ordering bug this guards against) plus the
-	// main repos-panel script - two total, none from instance panels here.
-	if strings.Count(html, "</script>") != 2 {
-		t.Fatalf("expected exactly two </script> tags, got %d", strings.Count(html, "</script>"))
+	// before <main> - see the ordering bug this guards against), the Wave
+	// Planning and Migration Workflow panels' own scripts (both always
+	// present, even without instance data), and the main repos-panel
+	// script - four total.
+	if strings.Count(html, "</script>") != 4 {
+		t.Fatalf("expected exactly four </script> tags, got %d", strings.Count(html, "</script>"))
 	}
 
 	dataJSON := extractBetween(t, html, "const DATA = ", ";\nconst FINDING_DEFS")
