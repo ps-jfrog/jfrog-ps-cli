@@ -22,11 +22,11 @@ func TestGetActivity_ThreeQueriesAndLastActivity(t *testing.T) {
 		switch {
 		case strings.Contains(string(body), `"$asc":["created"]`):
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"results": []map[string]interface{}{{"created": "2024-01-01T00:00:00.000Z"}},
+				"results": []map[string]interface{}{{"created": "2024-01-01T00:00:00.000Z", "created_by": "alice"}},
 			})
 		case strings.Contains(string(body), `"$desc":["modified"]`):
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
-				"results": []map[string]interface{}{{"modified": "2024-06-01T00:00:00.000Z"}},
+				"results": []map[string]interface{}{{"modified": "2024-06-01T00:00:00.000Z", "modified_by": "bob"}},
 			})
 		case strings.Contains(string(body), "stat.downloaded"):
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
@@ -49,8 +49,14 @@ func TestGetActivity_ThreeQueriesAndLastActivity(t *testing.T) {
 	if act.Created != "2024-01-01T00:00:00.000Z" {
 		t.Errorf("unexpected Created: %q", act.Created)
 	}
+	if act.CreatedBy != "alice" {
+		t.Errorf("unexpected CreatedBy: %q", act.CreatedBy)
+	}
 	if act.LastPush != "2024-06-01T00:00:00.000Z" {
 		t.Errorf("unexpected LastPush: %q", act.LastPush)
+	}
+	if act.LastPushBy != "bob" {
+		t.Errorf("unexpected LastPushBy: %q", act.LastPushBy)
 	}
 	if act.LastPull != "2024-03-01T00:00:00.000Z" {
 		t.Errorf("unexpected LastPull: %q", act.LastPull)
@@ -72,7 +78,7 @@ func TestGetActivity_EmptyResultsLeaveFieldsBlank(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetActivity returned error: %v", err)
 	}
-	if act.Created != "" || act.LastPush != "" || act.LastPull != "" || act.LastActivity != "" {
+	if act.Created != "" || act.CreatedBy != "" || act.LastPush != "" || act.LastPushBy != "" || act.LastPull != "" || act.LastActivity != "" {
 		t.Fatalf("expected all-blank Activity, got %+v", act)
 	}
 }

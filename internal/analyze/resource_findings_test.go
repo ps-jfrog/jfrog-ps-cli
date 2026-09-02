@@ -42,6 +42,7 @@ func TestComputeResourceFindings_PermissionTargets(t *testing.T) {
 			{Name: "orphaned", Repos: []string{"docker-local"}}, // no principals
 			{Name: "wide-open", Repos: []string{"**"}, UserActions: map[string][]string{"alice": {"READ"}}},
 			{Name: "healthy", Repos: []string{"docker-local"}, UserActions: map[string][]string{"alice": {"READ"}}},
+			{Name: "anon-granted", Repos: []string{"public-local"}, UserActions: map[string][]string{"Anonymous": {"READ"}}},
 		},
 	}
 	got := computeResourceFindings(snap)
@@ -58,6 +59,9 @@ func TestComputeResourceFindings_PermissionTargets(t *testing.T) {
 	}
 	if len(byName["healthy"]) != 0 {
 		t.Errorf("expected 'healthy' to have no findings, got %+v", byName["healthy"])
+	}
+	if !contains(byName["anon-granted"], "anonymous-access") {
+		t.Errorf("expected 'anon-granted' to be flagged anonymous-access (case-insensitively), got %+v", byName)
 	}
 }
 

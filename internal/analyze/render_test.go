@@ -60,6 +60,28 @@ func TestRender_SkipsUncomputedFindingDefs(t *testing.T) {
 	}
 }
 
+func TestRender_ReposTabHasProjectAndDateRangeFilters(t *testing.T) {
+	header := []string{"repo_name", "package_type", "repo_type", "project_key", "files_count", "usage_gb", "last_activity_date"}
+	rows := []Row{
+		mkRow(map[string]string{"repo_name": "docker-local", "package_type": "Docker", "repo_type": "LOCAL", "project_key": "team-a", "files_count": "0", "usage_gb": "0", "last_activity_date": "2024-06-01T00:00:00Z"}),
+	}
+	ComputeFindings(header, rows, DefaultOptions(), time.Now())
+
+	html, err := Render(header, rows, RenderOptions{SourceFile: "report.csv", Opts: DefaultOptions(), GeneratedAt: time.Now()})
+	if err != nil {
+		t.Fatalf("Render returned error: %v", err)
+	}
+	for _, want := range []string{
+		`id="project"`, `id="date-field"`, `id="date-from"`, `id="date-to"`,
+		`["project_key", "Project"]`, "function rebuildProjectOptions", "function matchesDateRange",
+		"const usesProjects", "projectSelect.addEventListener", "dateFromInput.addEventListener", "dateToInput.addEventListener",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("expected the Repos tab to contain %q, it did not", want)
+		}
+	}
+}
+
 func TestHTMLEscapeAndAttr(t *testing.T) {
 	if got := htmlEscape(`<b>a & b</b>`); got != "&lt;b&gt;a &amp; b&lt;/b&gt;" {
 		t.Errorf("htmlEscape unexpected: %q", got)

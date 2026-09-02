@@ -11,7 +11,7 @@ func TestWriteReportCSV_WithAndWithoutPolicies(t *testing.T) {
 	rows := []Row{
 		{
 			RepoSummary: RepoSummary{RepoKey: "docker-local", PackageType: "Docker", RepoType: "LOCAL", ProjectKey: "team-a", FilesCount: 3, UsedSpaceInBytes: 1073741824},
-			Activity:    Activity{Created: "2024-01-01T00:00:00Z", LastPush: "2024-06-01T00:00:00Z"},
+			Activity:    Activity{Created: "2024-01-01T00:00:00Z", CreatedBy: "alice", LastPush: "2024-06-01T00:00:00Z", LastPushBy: "bob"},
 			Policy:      PolicyMatch{Keys: "p1", Enabled: "true"},
 		},
 	}
@@ -32,6 +32,9 @@ func TestWriteReportCSV_WithAndWithoutPolicies(t *testing.T) {
 	}
 	if records[1][0] != "docker-local" || records[1][3] != "team-a" || records[1][5] != "1.0000" {
 		t.Fatalf("unexpected row data: %v", records[1])
+	}
+	if records[1][7] != "alice" || records[1][9] != "bob" {
+		t.Fatalf("expected created_by=alice, last_push_by=bob, got %v", records[1])
 	}
 
 	var withoutPolicies bytes.Buffer

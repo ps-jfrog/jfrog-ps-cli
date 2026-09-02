@@ -2,6 +2,7 @@ package analyze
 
 import (
 	"fmt"
+	"strings"
 
 	"jfrogpscli/internal/instance"
 )
@@ -57,6 +58,14 @@ func computeResourceFindings(snap *instance.Snapshot) []ResourceFinding {
 					fmt.Sprintf("Repo scope includes a wildcard pattern (%q) - grants broad, hard-to-audit access.", r)})
 				break
 			}
+		}
+		if actions := anonymousGrant(p); len(actions) > 0 {
+			scope := strings.Join(p.Repos, ", ")
+			if scope == "" {
+				scope = "(no repos scoped)"
+			}
+			out = append(out, ResourceFinding{"permission_target", p.Name, "anonymous-access",
+				fmt.Sprintf("Grants the anonymous user %s on %s - confirm unauthenticated access here is intentional.", strings.Join(actions, "/"), scope)})
 		}
 	}
 

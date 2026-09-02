@@ -7,20 +7,26 @@ import (
 	"jfrogpscli/internal/jfclient"
 )
 
-// Activity holds derived created/last-push/last-pull timestamps for a repo.
-// Artifactory has no repo "created" timestamp of its own, so Created is a
-// proxy: the created time of the repo's oldest item.
+// Activity holds derived created/last-push/last-pull timestamps for a repo,
+// plus who's behind the created/last-push events - useful for spotting a
+// repo created or modified by an unexpected account. Artifactory has no
+// repo "created" timestamp of its own, so Created is a proxy: the created
+// time of the repo's oldest item.
 type Activity struct {
 	Created      string // proxy: created time of the oldest item in the repo
+	CreatedBy    string // the account that created that oldest item
 	LastPush     string // proxy: modified time of the most recently modified item
+	LastPushBy   string // the account that made that most recent modification
 	LastPull     string // most recent stat.downloaded across the repo's items
 	LastActivity string // max(LastPush, LastPull)
 }
 
 type aqlItem struct {
-	Created  string `json:"created"`
-	Modified string `json:"modified"`
-	Stats    []struct {
+	Created    string `json:"created"`
+	CreatedBy  string `json:"created_by"`
+	Modified   string `json:"modified"`
+	ModifiedBy string `json:"modified_by"`
+	Stats      []struct {
 		Downloaded string `json:"downloaded"`
 	} `json:"stats"`
 }
@@ -37,21 +43,23 @@ func GetActivity(c *jfclient.Client, repoKey string) (Activity, error) {
 	var act Activity
 
 	created, err := runAQL(c, fmt.Sprintf(
-		`items.find({"repo":"%s"}).sort({"$asc":["created"]}).limit(1)`, key))
+		`items.find({"repo":"%s"}).include("created","created_by").sort({"$asc":["created"]}).limit(1)`, key))
 	if err != nil {
 		return act, fmt.Errorf("created query: %w", err)
 	}
 	if len(created.Results) > 0 {
 		act.Created = created.Results[0].Created
+		act.CreatedBy = created.Results[0].CreatedBy
 	}
 
 	modified, err := runAQL(c, fmt.Sprintf(
-		`items.find({"repo":"%s"}).sort({"$desc":["modified"]}).limit(1)`, key))
+		`items.find({"repo":"%s"}).include("modified","modified_by").sort({"$desc":["modified"]}).limit(1)`, key))
 	if err != nil {
 		return act, fmt.Errorf("modified query: %w", err)
 	}
 	if len(modified.Results) > 0 {
 		act.LastPush = modified.Results[0].Modified
+		act.LastPushBy = modified.Results[0].ModifiedBy
 	}
 
 	downloaded, err := runAQL(c, fmt.Sprintf(

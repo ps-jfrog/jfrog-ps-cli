@@ -49,7 +49,9 @@ button,select,input { font:inherit; }
 .tab.active { background:var(--blue); color:white; border-color:var(--blue); }
 input[type=search] { min-width:260px; flex:1; border:1px solid var(--line);
   border-radius:7px; padding:8px 10px; }
+input[type=date] { border:1px solid var(--line); border-radius:7px; padding:7px 8px; background:white; }
 select { border:1px solid var(--line); border-radius:7px; padding:8px; background:white; }
+.date-sep { color:#8a94a6; }
 .active-filter { padding:10px 14px; background:var(--blue-bg); color:#174a91;
   border-bottom:1px solid #bdd3f2; display:none; }
 .active-filter.show { display:block; }
@@ -1054,6 +1056,16 @@ function renderSequenceDiagram(containerId, lanes, messages) {
     <div class="toolbar" id="tabs">
       <input id="search" type="search" placeholder="Search repository name, type, finding...">
       <select id="package"><option value="">All package types</option></select>
+      <select id="project"><option value="">All projects</option></select>
+      <select id="date-field" title="Which date column the range below filters on">
+        <option value="last_activity_date">Last activity</option>
+        <option value="created_date">Created</option>
+        <option value="last_push_date">Last push</option>
+        <option value="last_pull_date">Last pull</option>
+      </select>
+      <input id="date-from" type="date" aria-label="From date">
+      <span class="date-sep">&ndash;</span>
+      <input id="date-to" type="date" aria-label="To date">
       <button class="clear" id="clear">Clear filters</button>
     </div>
     <div class="active-filter" id="active-filter"></div>
@@ -1077,11 +1089,19 @@ const FINDING_DEFS = __JSON_FINDINGS__;
 
 let repoType = "";
 let packageValue = "";
+let projectValue = "";
+let dateField = "last_activity_date";
+let dateFrom = "";
+let dateTo = "";
 let finding = "";
 let explanation = "";
 
 const search = document.querySelector("#search");
 const packageSelect = document.querySelector("#package");
+const projectSelect = document.querySelector("#project");
+const dateFieldSelect = document.querySelector("#date-field");
+const dateFromInput = document.querySelector("#date-from");
+const dateToInput = document.querySelector("#date-to");
 const tbody = document.querySelector("#tbody");
 const thead = document.querySelector("#thead");
 const activeFilter = document.querySelector("#active-filter");
@@ -1089,10 +1109,18 @@ const drawer = document.querySelector("#drawer");
 const tabsBar = document.querySelector("#tabs");
 
 const CORE_COLUMNS = [
-  ["repo_name", "Repository"], ["package_type", "Package"], ["repo_type", "Type"],
+  ["repo_name", "Repository"], ["package_type", "Package"], ["repo_type", "Type"], ["project_key", "Project"],
   ["files_count", "Files"], ["usage_gb", "Usage GB"], ["last_activity_date", "Last activity"],
+  ["created_by", "Created by"], ["last_push_by", "Modified by"],
   ["cleanup_policy_keys", "Cleanup policy"],
 ];
+
+// usesProjects is true only if at least one repo's project_key is a real
+// project (not blank/"default") - a customer not using the Projects
+// feature at all still gets a project_key column full of "default" on
+// every row, which isn't worth a dedicated column or filter, so both stay
+// hidden rather than showing something that's always the same value.
+const usesProjects = DATA.some(r => r.project_key && r.project_key !== "default");
 
 function buildTabs() {
   const types = [...new Set(DATA.map(r => r.repo_type).filter(Boolean))].sort();
@@ -1130,6 +1158,32 @@ function rebuildPackageOptions() {
     values.map(v => "<option " + (v === packageValue ? "selected" : "") + ">" + escapeHtml(v) + "</option>").join("");
 }
 
+// rebuildProjectOptions is only called once at init, not per repo-type-tab
+// switch like rebuildPackageOptions - a repo's project assignment is
+// independent of its repo type, so the option list doesn't need rescoping.
+function rebuildProjectOptions() {
+  const values = [...new Set(DATA.map(r => r.project_key).filter(v => v && v !== "default"))].sort();
+  projectSelect.innerHTML = '<option value="">All projects</option>' +
+    values.map(v => "<option " + (v === projectValue ? "selected" : "") + ">" + escapeHtml(v) + "</option>").join("");
+  projectSelect.style.display = usesProjects ? "" : "none";
+}
+
+// matchesDateRange compares an ISO-8601 timestamp string (or "" for "no
+// data recorded", e.g. an empty repo's blank last_activity_date) against
+// the dateFrom/dateTo range (plain "YYYY-MM-DD" values from the date
+// inputs). No range set at all always matches, so this filter is a no-op
+// until the user actually picks a date; a set range excludes rows with no
+// value for the chosen field, since there's nothing to compare.
+function matchesDateRange(value) {
+  if (!dateFrom && !dateTo) return true;
+  if (!value) return false;
+  const t = Date.parse(value);
+  if (Number.isNaN(t)) return false;
+  if (dateFrom && t < Date.parse(dateFrom + "T00:00:00Z")) return false;
+  if (dateTo && t > Date.parse(dateTo + "T23:59:59Z")) return false;
+  return true;
+}
+
 function renderBadges(findings) {
   return (findings || []).map(f =>
     '<span class="badge ' + escapeHtml(f) + '">' + escapeHtml(f) + "</span>").join("");
@@ -1140,6 +1194,8 @@ function visibleRows() {
   return DATA.filter(r => {
     if (repoType && r.repo_type !== repoType) return false;
     if (packageValue && r.package_type !== packageValue) return false;
+    if (projectValue && r.project_key !== projectValue) return false;
+    if (!matchesDateRange(r[dateField])) return false;
     if (finding && !(r.findings || []).includes(finding)) return false;
     if (query && !JSON.stringify(r).toLowerCase().includes(query)) return false;
     return true;
@@ -1148,7 +1204,10 @@ function visibleRows() {
 
 function render() {
   const rows = visibleRows();
-  const cols = CORE_COLUMNS.filter(([key]) => DATA.length === 0 || key in DATA[0]);
+  const cols = CORE_COLUMNS.filter(([key]) => {
+    if (key === "project_key") return usesProjects;
+    return DATA.length === 0 || key in DATA[0];
+  });
 
   thead.innerHTML = "<tr>" + cols.map(([, label]) =>
     "<th" + (label === "Files" || label === "Usage GB" ? ' class="number"' : "") + ">" + label + "</th>").join("") +
@@ -1199,9 +1258,15 @@ document.querySelectorAll("#findings .finding").forEach(card =>
 
 search.addEventListener("input", render);
 packageSelect.addEventListener("change", () => { packageValue = packageSelect.value; render(); });
+projectSelect.addEventListener("change", () => { projectValue = projectSelect.value; render(); });
+dateFieldSelect.addEventListener("change", () => { dateField = dateFieldSelect.value; render(); });
+dateFromInput.addEventListener("change", () => { dateFrom = dateFromInput.value; render(); });
+dateToInput.addEventListener("change", () => { dateTo = dateToInput.value; render(); });
 document.querySelector("#clear").addEventListener("click", () => {
-  repoType = ""; packageValue = ""; finding = ""; explanation = "";
+  repoType = ""; packageValue = ""; projectValue = ""; dateField = "last_activity_date"; dateFrom = ""; dateTo = "";
+  finding = ""; explanation = "";
   search.value = ""; drawer.classList.remove("show");
+  projectSelect.value = ""; dateFieldSelect.value = "last_activity_date"; dateFromInput.value = ""; dateToInput.value = "";
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.repoType === ""));
   document.querySelectorAll("#findings .finding").forEach(c => c.classList.remove("active"));
   rebuildPackageOptions();
@@ -1210,6 +1275,7 @@ document.querySelector("#clear").addEventListener("click", () => {
 
 buildTabs();
 rebuildPackageOptions();
+rebuildProjectOptions();
 render();
 initWavePlanning();
 initMigrationWorkflow();

@@ -59,6 +59,22 @@ field, and has no reverse "which cleanup policy applies to this repo" or
 "which policy applies to this project" lookup — `--repos`/`--policies`/
 `--instance` derive these via AQL and client-side matching.
 
+**Error handling:** nothing here ever aborts the run. A broken/unlicensed
+endpoint - even a transient 5xx on the very first call `--repos`/`--instance`
+make - is logged and the affected piece is skipped (its output file simply
+isn't written) rather than failing the whole invocation, so `--all` still
+gets you everything that *could* be collected. Every such error is
+summarized to stderr once, at the end of the run:
+
+```
+Discovery completed with 1 error(s) (continuing rather than aborting):
+  - instance: fetch storageinfo: HTTP 500: ...
+```
+
+The only genuine failures are usage errors that mean there's nothing to do
+at all: bad flags, unresolvable connection credentials, or `--analyze` with
+neither a repos CSV nor an instance JSON to read.
+
 ---
 
 ## `--repos`
@@ -67,10 +83,16 @@ field, and has no reverse "which cleanup policy applies to this repo" or
 project assignment from `/api/storageinfo`, then (for non-empty repos,
 concurrently) derives:
 
-- `created_date` — proxy: creation time of the repo's oldest item
-- `last_push_date` — proxy: modification time of the repo's newest item
+- `created_date` / `created_by` — proxy: creation time (and creating
+  account) of the repo's oldest item
+- `last_push_date` / `last_push_by` — proxy: modification time (and
+  modifying account) of the repo's newest item
 - `last_pull_date` — most recent `stat.downloaded` across the repo's items
-- `last_activity_date` — the later of the two above
+- `last_activity_date` — the later of the two dates above
+
+The `_by` columns are useful for spotting a repo created or modified by an
+unexpected account - both are also shown as their own columns in
+`--analyze`'s Repos tab, not just buried in the per-repo detail drawer.
 
 and, by default, every matched cleanup policy's key, enabled state, cron
 expression, and full retention criteria (days *and* months variants, plus
@@ -155,15 +177,21 @@ sequenceDiagram
   users/groups
 - **Replication configs** — one bulk call, no per-repo lookup needed
 - **Federated repos' member config** — fetched per federated repo (no bulk
-  endpoint exists for this), concurrently
-- **Platform config** — global roles/environments, scoped tokens (metadata
-  only, never the token secret), certificates (metadata only, never the PEM),
-  property sets, proxies, backups, mail server/trash/password/lock-policy/
-  repo-layout/reverse-proxy config, archive cleanup policies, license
-  (type/licensee/validity — never the license hash), workers (never the
-  worker source code), webhooks (never the signing secret)
-- **Xray config** — policies, watches, ignore rules, curation policies,
-  system settings — zero-valued entirely if Xray isn't licensed
+  endpoint exists for this), concurrently. `--analyze` computes a Status per
+  repo from this (Healthy / Degraded / Single member / No members) — there's
+  no dedicated Artifactory "federation status" endpoint, so this is derived
+  client-side the same way the `single-member` finding always has been
+- **Platform config** — global roles/environments, scoped tokens (subject/
+  account, issued/expiry dates, scope — metadata only, never the token
+  secret), certificates (metadata only, never the PEM), property sets,
+  proxies, backups, mail server/trash/password/lock-policy/repo-layout/
+  reverse-proxy config, archive cleanup policies, license (type/licensee/
+  validity — never the license hash), workers (never the worker source
+  code), webhooks (never the signing secret)
+- **Xray config** — policies, watches, ignore rules, curation policies and
+  waivers (only fetched if curation is actually enabled/available — a 404
+  on the policies list means "not enabled," not "enabled with zero
+  policies"), system settings — zero-valued entirely if Xray isn't licensed
 
 Only the Artifactory version fetch is fatal; everything else soft-fails into
 the output's `warnings` array so one broken/unlicensed endpoint doesn't blank
@@ -217,7 +245,7 @@ sequenceDiagram
     CLI->>Acc: GET roles/environments/tokens/workers (wrapped lists)
     CLI->>Art: GET certificates/propertysets/proxies/backup/mailserver/trash/... (singleton configs)
     CLI->>Art: GET /event/api/v1/subscriptions (webhooks)
-    CLI->>Xr: GET policies/watches/ignore_rules/curation/settings
+    CLI->>Xr: GET policies/watches/ignore_rules/curation/policies (then /curation/waiver_requests if enabled)/settings
     CLI-->>User: write instance.json
 ```
 
@@ -225,52 +253,93 @@ sequenceDiagram
 
 ## `--analyze`
 
-**What it does:** Reads `--repos-csv` (from this environment or any other —
-this step never talks to Artifactory), optionally plus `--instance-json`, and
-writes one self-contained HTML file. All data is embedded in the HTML.
+**What it does:** Reads `--repos-csv` and/or `--instance-json` (from this
+environment or any other — this step never talks to Artifactory) and writes
+one self-contained HTML file. All data is embedded in the HTML. Either input
+alone is enough to render a report - e.g. running just `discover --instance`
+(no `--repos`) and then `--analyze` still produces a full report with
+Overview/Access/Projects/Federation/Platform/Xray tabs, just with an empty
+Repos tab. Only having *neither* file is an error.
 
 With just a repos CSV, the report is a single "Repos" view: summary stats,
 clickable findings, and a searchable/filterable repo explorer with a per-repo
-detail drawer.
+detail drawer. Besides the free-text search and repo-type tabs, the toolbar
+has a package-type filter, a date-range filter (pick which date column -
+Created, Last push, Last pull, or Last activity - then a from/to range), and
+a project filter - the last one only appears if the environment actually
+uses Projects (see the Project column note below), so it's never shown as a
+dead control on an instance that doesn't use the feature.
 
-An instance snapshot adds eight more tabs, in this order - Overview (the
+The table's **Project** column works the same way: it's only shown once at
+least one repo's `project_key` is a real project (not blank/`"default"`) -
+an environment that doesn't use Projects at all never gets a column that
+would just say "default" on every row. This is a client-side check against
+the embedded row data, so it works whether or not `--instance-json` was
+even provided.
+
+An instance snapshot adds nine more tabs, in this order - Overview (the
 default active tab whenever one is present; Repos is the default only
 without instance data), then Repos, Projects, Access, Federation &
-Replication, Platform Config, Xray, All Findings, Relationships. The
-instance's URL is also shown top-right in the report header (linking to the
-real JPD) whenever instance data is present.
+Replication, Platform Config, Xray, Curation, All Findings, Relationships.
+The instance's URL is also shown top-right in the report header (linking to
+the real JPD) whenever instance data is present.
 - **Overview** — the instance's name and URL, component versions, storage
   summary, an "Environment counts" section (projects, repositories, users,
   groups, permission targets, federated repos, replication configs, global
-  roles - the instance's shape at a glance), authentication methods, and a
-  highlighted callout for repository signing keys if any are configured
+  roles - the instance's shape at a glance), authentication methods, a
+  highlighted callout for repository signing keys if any are configured, and
+  an **Anonymous access** callout (see below)
 - **Projects** — searchable table with each project's repo count (cross-reference
   against the Repos tab's `project_key` column to see exactly which repos —
   including ones with no project, `project_key` `"default"` — belong where);
   click a row to see that project's repos, roles, environments, and members
   in full
-- **Access** — searchable Users, Groups, and Permission Targets tables (the
-  last showing repo scope plus user/group grants)
-- **Federation & Replication** — federated repos' member config, and every
-  configured replication
-- **Platform Config** — global roles/environments/tokens, certificates,
-  signing keys (pair name, type, alias only - never key material), property
-  sets, proxies, backups, archive cleanup policies, workers, webhooks, plus
+- **Access** — searchable Users, Groups, and Permission Targets (repo scope
+  plus user/group grants) tables, a **Repo access by user/group** table (see
+  below), and Scoped Tokens (grouped by account/subject, with issued/expiry
+  rendered as dates rather than raw unix timestamps)
+- **Federation & Replication** — federated repos' member config plus a
+  computed Status (Healthy / Degraded / Single member / No members
+  configured, based on how many members are enabled), and every configured
+  replication
+- **Platform Config** — global roles/environments, certificates, signing
+  keys (pair name, type, alias only - never key material), property sets,
+  proxies, backups, archive cleanup policies, workers, webhooks, plus
   singleton config (mail server, password/lockout policy, reverse proxy,
   license, trash retention)
-- **Xray** — policies, watches, ignore rules, curation policies, and system
-  settings (shows a plain notice instead if Xray isn't licensed)
+- **Xray** — policies, watches, ignore rules, and system settings (shows a
+  plain notice instead if Xray isn't licensed)
+- **Curation** — its own tab, separate from Xray, since curation is an
+  independently-licensed feature: curation policies and waivers, with a
+  plain notice instead if curation itself isn't enabled/available on this
+  instance
 - **All Findings** — every flagged resource, of any type, in one searchable
   table: `resource_type`, `resource_name`, `finding`, `detail`. Combines the
   Repos tab's per-repo findings with new cross-resource findings:
-  `no-principals`/`wildcard-scope` (permission targets), `empty-project`
-  (no repos/roles/members), `single-member` (a federated repo with fewer
-  than 2 enabled members), `disabled` (a configured-but-disabled
-  replication), `non-expiring` (a scoped token with no expiry — a common
-  access-review finding), `inactive` (an Xray watch that's configured but
-  not active), `no-rules` (an Xray policy with no rules, so it can't act
-  even if assigned to a watch). This is the tab to open first for "what's
-  wrong across the whole environment."
+  `no-principals`/`wildcard-scope`/`anonymous-access` (permission targets),
+  `empty-project` (no repos/roles/members), `single-member` (a federated
+  repo with fewer than 2 enabled members), `disabled` (a
+  configured-but-disabled replication), `non-expiring` (a scoped token with
+  no expiry — a common access-review finding), `inactive` (an Xray watch
+  that's configured but not active), `no-rules` (an Xray policy with no
+  rules, so it can't act even if assigned to a watch). This is the tab to
+  open first for "what's wrong across the whole environment."
+
+**Anonymous access and per-user/per-repo access:** Artifactory has no
+dedicated "is anonymous access enabled" REST endpoint — it implements the
+"Allow Anonymous Access" toggle as permission-target grants to a built-in
+`anonymous` user, so that's what's scanned for instead, purely from data
+`--instance` already collects (no extra API calls): the Overview tab shows
+a callout naming every repo pattern the anonymous user is granted on (or an
+OK notice if there are none), each such grant also shows up as an
+`anonymous-access` finding on the All Findings tab, and the Access tab's
+**Repo access by user/group** table inverts every permission target's
+`Repos` × `UserActions`/`GroupActions` into one row per principal × repo ×
+permission target — search it for a username (or "anonymous") to see every
+repo they can reach and what they can do there. A group row shows the
+group's own grant, not its resolved members — group membership isn't
+collected by `--instance`, so resolving a group grant down to individual
+users isn't possible from this data alone.
 - **Relationships** — a project-to-repo view: pick "Global" or a project from
   the dropdown (a search box beside it narrows the project list, since an
   instance can have hundreds) and see that project's repos; anything with no
@@ -291,8 +360,8 @@ intentional). A finding whose source column is missing from the repos CSV
 mis-flagged.
 
 **Key flags:**
-- `--repos-csv` (default `<output>/<instance>/report.csv`, see "Output paths" above) — input; errors clearly if missing
-- `--instance-json` (default `<output>/<instance>/instance.json`, see "Output paths" above) — input if present, silently skipped (repos-only report) if not
+- `--repos-csv` (default `<output>/<instance>/report.csv`, see "Output paths" above) — input if present, silently skipped (instance-only report) if not
+- `--instance-json` (default `<output>/<instance>/instance.json`, see "Output paths" above) — input if present, silently skipped (repos-only report) if not; an error only if *neither* input exists
 - `--audit-html` (default `<output>/<instance>/audit.html`, see "Output paths" above) — output path
 - `--stale-days` (default `180`), `--huge-gb` (default `500`),
   `--massive-files` (default `500000`), `--long-name-chars` (default `40`)

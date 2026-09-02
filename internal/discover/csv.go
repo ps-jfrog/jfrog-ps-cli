@@ -12,7 +12,7 @@ import (
 // (or from jf-audit, its predecessor) analyzes the same way.
 var reportHeader = []string{
 	"repo_name", "package_type", "repo_type", "project_key", "files_count", "usage_gb",
-	"created_date", "last_push_date", "last_pull_date", "last_activity_date",
+	"created_date", "created_by", "last_push_date", "last_push_by", "last_pull_date", "last_activity_date",
 }
 
 var reportPolicyHeader = []string{
@@ -40,7 +40,8 @@ func WriteReportCSV(w io.Writer, rows []Row, withPolicies bool) error {
 		record := []string{
 			r.RepoKey, r.PackageType, r.RepoType, r.ProjectKey, strconv.Itoa(r.FilesCount),
 			strconv.FormatFloat(r.UsageGB(), 'f', 4, 64),
-			r.Activity.Created, r.Activity.LastPush, r.Activity.LastPull, r.Activity.LastActivity,
+			r.Activity.Created, r.Activity.CreatedBy, r.Activity.LastPush, r.Activity.LastPushBy,
+			r.Activity.LastPull, r.Activity.LastActivity,
 		}
 		if withPolicies {
 			record = append(record,

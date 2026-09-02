@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -242,6 +243,99 @@ func TestRun_AnalyzeDefaultOutputDirIsOutput(t *testing.T) {
 	wantHTML := filepath.Join(dir, "output", "default", "audit.html")
 	if _, err := os.Stat(wantHTML); err != nil {
 		t.Fatalf("expected audit HTML at %s: %v", wantHTML, err)
+	}
+}
+
+// brokenStorageInfoServer simulates the failure pattern seen in the field:
+// storageinfo (used both for the repo list and, inside GetSystemInfo, for
+// the storage summary) returns a transient 500, while everything else
+// behaves normally or soft-skips as "not available." Discovery should
+// tolerate this rather than aborting the whole run.
+func brokenStorageInfoServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/artifactory/api/storageinfo":
+			w.WriteHeader(http.StatusInternalServerError)
+		case "/artifactory/api/system/version":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"version":"7.90.0","revision":"1"}`))
+		case "/artifactory/api/cleanup/packages/policies":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`[]`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func TestRun_InstanceContinuesWhenRepoListFails(t *testing.T) {
+	srv := brokenStorageInfoServer(t)
+	dir := t.TempDir()
+	instancePath := filepath.Join(dir, "instance.json")
+
+	var code int
+	out := captureStderr(t, func() {
+		code = Run([]string{"--instance", "--url", srv.URL, "--token", "tok", "--instance-json", instancePath})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit code 0 despite a storageinfo failure, got %d", code)
+	}
+	if _, err := os.Stat(instancePath); err != nil {
+		t.Fatalf("expected instance.json to still be written: %v", err)
+	}
+	if !strings.Contains(out, "Discovery completed with") {
+		t.Errorf("expected a discovery-errors summary in stderr, got: %s", out)
+	}
+}
+
+func TestRun_ReposAndPoliciesReportErrorsInsteadOfAborting(t *testing.T) {
+	srv := brokenStorageInfoServer(t)
+	dir := t.TempDir()
+	reposPath := filepath.Join(dir, "report.csv")
+	policiesPath := filepath.Join(dir, "policies.csv")
+
+	var code int
+	out := captureStderr(t, func() {
+		code = Run([]string{
+			"--repos", "--policies", "--url", srv.URL, "--token", "tok",
+			"--repos-csv", reposPath, "--policies-csv", policiesPath,
+		})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit code 0 even though the underlying storageinfo call failed, got %d", code)
+	}
+	if _, err := os.Stat(reposPath); err == nil {
+		t.Error("expected no report.csv to be written when the repo list couldn't be fetched")
+	}
+	if !strings.Contains(out, "Discovery completed with") {
+		t.Errorf("expected a discovery-errors summary in stderr, got: %s", out)
+	}
+}
+
+func TestRun_AnalyzeInstanceOnly_NoReposCSVNeeded(t *testing.T) {
+	dir := t.TempDir()
+	instancePath := filepath.Join(dir, "instance.json")
+	htmlPath := filepath.Join(dir, "audit.html")
+	missingReposPath := filepath.Join(dir, "report.csv") // deliberately absent
+
+	instanceContent := `{"generated_at":"2024-01-01T00:00:00Z","url":"https://example.jfrog.io","name":"example","system":{"artifactory_version":"7.90.0"}}`
+	if err := os.WriteFile(instancePath, []byte(instanceContent), 0o644); err != nil {
+		t.Fatalf("failed to write test instance.json: %v", err)
+	}
+
+	code := Run([]string{"--analyze", "--repos-csv", missingReposPath, "--instance-json", instancePath, "--audit-html", htmlPath})
+	if code != 0 {
+		t.Fatalf("expected exit code 0 when only --instance-json is present, got %d", code)
+	}
+	data, err := os.ReadFile(htmlPath)
+	if err != nil {
+		t.Fatalf("expected HTML output file to exist: %v", err)
+	}
+	if !strings.Contains(string(data), `data-report-tab="overview"`) {
+		t.Error("expected the instance-derived Overview tab in an instance-only report")
 	}
 }
 

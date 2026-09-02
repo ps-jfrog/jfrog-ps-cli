@@ -32,6 +32,10 @@ func TestGetXrayConfig_HappyPath(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": []map[string]interface{}{{"id": "c1", "name": "cp1", "enabled": true, "scope": "specific_repos"}},
 			})
+		case "/xray/api/v1/curation/waiver_requests":
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"data": []map[string]interface{}{{"id": 1, "status": "pending", "requesters": []map[string]interface{}{{"user": "alice", "justification": "needed for build"}}}},
+			})
 		case "/xray/api/v1/configuration/systemParameters":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"maxDiskDataUsage": 80, "monitorSamplingInterval": 300, "jobInterval": 86400, "allowSendingAnalytics": true,
@@ -62,8 +66,14 @@ func TestGetXrayConfig_HappyPath(t *testing.T) {
 	if len(cfg.IgnoreRules) != 1 || cfg.IgnoreRules[0].ID != "ir1" {
 		t.Errorf("unexpected IgnoreRules: %+v", cfg.IgnoreRules)
 	}
+	if !cfg.CurationAvailable {
+		t.Error("expected CurationAvailable to be true when the policies endpoint responds")
+	}
 	if len(cfg.CurationPolicies) != 1 || cfg.CurationPolicies[0].Name != "cp1" {
 		t.Errorf("unexpected CurationPolicies: %+v", cfg.CurationPolicies)
+	}
+	if len(cfg.CurationWaivers) != 1 || cfg.CurationWaivers[0].Status != "pending" || len(cfg.CurationWaivers[0].Requesters) != 1 || cfg.CurationWaivers[0].Requesters[0].User != "alice" {
+		t.Errorf("unexpected CurationWaivers: %+v", cfg.CurationWaivers)
 	}
 	if cfg.Settings == nil {
 		t.Fatal("expected non-nil Settings")
@@ -85,5 +95,8 @@ func TestGetXrayConfig_UnlicensedInstanceStaysZeroValued(t *testing.T) {
 	}
 	if cfg.Settings != nil || len(cfg.Policies) != 0 || len(cfg.Watches) != 0 {
 		t.Fatalf("expected zero-valued XrayConfig, got %+v", cfg)
+	}
+	if cfg.CurationAvailable || len(cfg.CurationWaivers) != 0 {
+		t.Fatalf("expected curation unavailable with no waivers fetched, got %+v", cfg)
 	}
 }

@@ -14,8 +14,11 @@ type artifactoryVersionResponse struct {
 	Addons   []string `json:"addons"`
 }
 
-// GetSystemInfo fetches the Artifactory version (required - a failure here
-// aborts) plus Xray/Access/Distribution versions and the storage summary.
+// GetSystemInfo fetches the Artifactory version plus Xray/Access/
+// Distribution versions and the storage summary. A failure fetching the
+// Artifactory version itself is returned as an error (callers should treat
+// it as a warning rather than aborting the whole collection - an empty
+// ArtifactoryVersion safely falls back to legacy API behavior elsewhere).
 // The other three components are optional: a 404 (not installed/licensed)
 // is recorded as "unavailable" rather than an error; any other failure is
 // returned in warnings so the rest of the collection still completes.
@@ -63,7 +66,7 @@ func GetSystemInfo(c *jfclient.Client) (instance.SystemInfo, []string, error) {
 		return info, warnings, nil
 	}
 	if err := storageResp.Error("fetch storageinfo"); err != nil {
-		warnings = append(warnings, err.Error())
+		warnings = append(warnings, fmt.Sprintf("storage summary: %s", err.Error()))
 		return info, warnings, nil
 	}
 	var si struct {

@@ -41,18 +41,23 @@ func DefaultCollectOptions() CollectOptions {
 // (typically from ListRepoStorage) drives project repo counts and which
 // repos to fetch federation config for.
 //
-// Only the Artifactory version fetch is fatal - every other piece
-// soft-fails into Snapshot.Warnings so one broken/unlicensed endpoint
-// doesn't blank out the rest of the report.
+// Nothing here is fatal - every piece, including the Artifactory version
+// fetch itself, soft-fails into Snapshot.Warnings so one broken/unlicensed
+// endpoint (even a transient 5xx on the very first call) never blanks out
+// the rest of the report. CollectInstance's error return exists for a
+// caller that wants to treat total collection failure specially, but in
+// practice every failure mode here is already captured as a warning
+// instead.
 func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOptions) (*instance.Snapshot, error) {
 	snap := &instance.Snapshot{URL: c.BaseURL, Name: instance.NameFromURL(c.BaseURL)}
 
 	sysInfo, sysWarnings, err := GetSystemInfo(c)
 	if err != nil {
-		return nil, fmt.Errorf("system info: %w", err)
+		snap.Warnings = append(snap.Warnings, fmt.Sprintf("system info: %v", err))
+	} else {
+		snap.Warnings = append(snap.Warnings, sysWarnings...)
 	}
 	snap.System = sysInfo
-	snap.Warnings = append(snap.Warnings, sysWarnings...)
 
 	secInfo, secWarnings := GetSecurityInfo(c)
 	snap.Security = secInfo

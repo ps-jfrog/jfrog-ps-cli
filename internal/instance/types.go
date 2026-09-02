@@ -395,6 +395,29 @@ type XrayCurationPolicy struct {
 	Condition    map[string]interface{} `json:"condition,omitempty"`
 }
 
+// CurationWaiverRequester is one person's request to unblock a package on a
+// CurationWaiver (GET /xray/api/v1/curation/waiver_requests's "requesters").
+type CurationWaiverRequester struct {
+	User          string `json:"user"`
+	Email         string `json:"email,omitempty"`
+	RequestedAt   string `json:"requested_at,omitempty"`
+	Justification string `json:"justification,omitempty"`
+}
+
+// XrayCurationWaiver is a curation waiver request - a request to unblock a
+// specific package version that a curation policy blocked (GET
+// /xray/api/v1/curation/waiver_requests, response wrapped as {"data": [...]}).
+// Distinct from a XrayCurationPolicy itself: a policy defines what's
+// blocked, a waiver is a (pending/approved/rejected) exception request
+// against that block.
+type XrayCurationWaiver struct {
+	ID         int64                     `json:"id"`
+	Status     string                    `json:"status"`
+	CreatedAt  string                    `json:"created_at,omitempty"`
+	ClosedAt   string                    `json:"closed_at,omitempty"`
+	Requesters []CurationWaiverRequester `json:"requesters,omitempty"`
+}
+
 // XraySettings combines a few fields of Xray's global system parameters
 // (GET /xray/api/v1/configuration/systemParameters) with the separate
 // DB-sync time endpoint (GET /xray/api/v1/configuration/dbsync/time).
@@ -409,12 +432,18 @@ type XraySettings struct {
 // XrayConfig bundles Xray policy/watch/ignore-rule/curation configuration.
 // Every field is independently soft-failed - Xray being unlicensed simply
 // leaves this whole struct zero-valued (see Snapshot.System.XrayAvailable).
+// CurationAvailable distinguishes "curation is enabled but has zero
+// policies configured" from "curation itself isn't enabled/licensed here" -
+// both otherwise look identical (an empty CurationPolicies slice).
+// CurationWaivers is only fetched when CurationAvailable is true.
 type XrayConfig struct {
-	Policies         []XrayPolicy         `json:"policies,omitempty"`
-	Watches          []XrayWatch          `json:"watches,omitempty"`
-	IgnoreRules      []XrayIgnoreRule     `json:"ignore_rules,omitempty"`
-	CurationPolicies []XrayCurationPolicy `json:"curation_policies,omitempty"`
-	Settings         *XraySettings        `json:"settings,omitempty"`
+	Policies          []XrayPolicy         `json:"policies,omitempty"`
+	Watches           []XrayWatch          `json:"watches,omitempty"`
+	IgnoreRules       []XrayIgnoreRule     `json:"ignore_rules,omitempty"`
+	CurationAvailable bool                 `json:"curation_available,omitempty"`
+	CurationPolicies  []XrayCurationPolicy `json:"curation_policies,omitempty"`
+	CurationWaivers   []XrayCurationWaiver `json:"curation_waivers,omitempty"`
+	Settings          *XraySettings        `json:"settings,omitempty"`
 }
 
 // Snapshot is the full instance-wide discovery result, written/read as one
@@ -427,10 +456,10 @@ type Snapshot struct {
 	// name NameFromURL derives from it (e.g. "psazuse") - the analyze report
 	// displays both, and jfps discover's --output default directory naming
 	// uses the same Name so the two stay consistent.
-	URL         string       `json:"url,omitempty"`
-	Name        string       `json:"name,omitempty"`
-	System      SystemInfo   `json:"system"`
-	Security    SecurityInfo `json:"security"`
+	URL      string       `json:"url,omitempty"`
+	Name     string       `json:"name,omitempty"`
+	System   SystemInfo   `json:"system"`
+	Security SecurityInfo `json:"security"`
 
 	Users          []User `json:"users,omitempty"`
 	UsersTruncated bool   `json:"users_truncated,omitempty"`

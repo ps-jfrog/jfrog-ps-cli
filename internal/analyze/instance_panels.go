@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"time"
 
 	"jfrogpscli/internal/instance"
 )
@@ -18,9 +19,9 @@ type tableColumn struct {
 }
 
 // renderInstanceTabs builds the "Projects"/"Access"/"Federation &
-// Replication"/"Platform Config"/"Xray" nav buttons and panels from an
-// instance snapshot, in that order. Overview, Repos, All Findings, and
-// Relationships are positioned around these by Render itself (Overview
+// Replication"/"Platform Config"/"Xray"/"Curation" nav buttons and panels
+// from an instance snapshot, in that order. Overview, Repos, All Findings,
+// and Relationships are positioned around these by Render itself (Overview
 // needs the repo count, which isn't part of an instance.Snapshot). Returns
 // ("", "", nil) when snap is nil, so Render's single-panel behavior is
 // unchanged without one.
@@ -39,6 +40,7 @@ func renderInstanceTabs(snap *instance.Snapshot) (navHTML, panelsHTML string, er
 		{"fedrep", "Federation & Replication", renderFederationReplicationPanel},
 		{"platform", "Platform Config", renderPlatformConfigPanel},
 		{"xray", "Xray", renderXrayPanel},
+		{"curation", "Curation", renderCurationPanel},
 	}
 
 	var nav, panels strings.Builder
@@ -133,12 +135,61 @@ func renderOverviewPanel(snap *instance.Snapshot, repoCount int) (string, error)
 		b.WriteString(`<div class="callout ok"><strong>No repository signing keys configured.</strong></div>`)
 	}
 
+	b.WriteString("<h2>Anonymous access</h2>")
+	if repos := anonymousAccessRepos(snap.Permissions); len(repos) > 0 {
+		fmt.Fprintf(&b, `<div class="callout warn"><strong>&#9888; The built-in "anonymous" user has a permission-target grant scoped to %d repo pattern(s).</strong> There's no dedicated "is anonymous access enabled" API - Artifactory implements it as grants to this built-in user, so this is derived from the same permission-target data as the Access tab's Repo Access table. Confirm this is intentional.<ul>%s</ul></div>`,
+			len(repos), liList(repos))
+	} else {
+		b.WriteString(`<div class="callout ok"><strong>No anonymous access grants detected</strong> - no permission target grants the "anonymous" user any action.</div>`)
+	}
+
 	if len(snap.Warnings) > 0 {
 		b.WriteString("<h2>Collection warnings</h2>")
 		fmt.Fprintf(&b, `<div class="callout warn"><ul>%s</ul></div>`, liList(snap.Warnings))
 	}
 
 	return b.String(), nil
+}
+
+// anonymousPrincipal is Artifactory's built-in username for unauthenticated
+// requests. There's no dedicated "is anonymous access enabled" REST
+// endpoint - Artifactory implements the "Allow Anonymous Access" toggle as
+// permission-target grants to this built-in user, so that's what gets
+// scanned for here instead of a global setting.
+const anonymousPrincipal = "anonymous"
+
+// anonymousGrant returns the actions (if any) a permission target grants to
+// the anonymous user.
+func anonymousGrant(p instance.PermissionTarget) []string {
+	for user, actions := range p.UserActions {
+		if strings.EqualFold(user, anonymousPrincipal) {
+			return actions
+		}
+	}
+	return nil
+}
+
+// anonymousAccessRepos returns the deduped, sorted set of repo patterns
+// (as scoped on their permission targets - a wildcard like "**" is
+// returned as-is, not expanded against a repo list, since the repo list
+// itself isn't part of an instance.Snapshot) that grant the anonymous user
+// any action.
+func anonymousAccessRepos(perms []instance.PermissionTarget) []string {
+	seen := map[string]bool{}
+	for _, p := range perms {
+		if len(anonymousGrant(p)) == 0 {
+			continue
+		}
+		for _, r := range p.Repos {
+			seen[r] = true
+		}
+	}
+	repos := make([]string, 0, len(seen))
+	for r := range seen {
+		repos = append(repos, r)
+	}
+	sort.Strings(repos)
+	return repos
 }
 
 func renderAccessPanel(snap *instance.Snapshot) (string, error) {
@@ -182,6 +233,28 @@ func renderAccessPanel(snap *instance.Snapshot) (string, error) {
 	}
 	b.WriteString(permsHTML)
 
+	grants := repoAccessRows(snap.Permissions)
+	fmt.Fprintf(&b, "<h2>Repo access by user/group (%d)</h2>", len(grants))
+	b.WriteString(`<p>One row per principal &times; repo &times; permission target, joined from the table above - search for a username (or "anonymous") to see every repo they can reach and what they can do there. Group rows show the group's own grant, not its resolved members - group membership isn't collected.</p>`)
+	grantsHTML, err := renderGenericTable("access-repo-grants", grants, []tableColumn{
+		{Key: "principal", Label: "Principal"}, {Key: "principal_type", Label: "Type"}, {Key: "repo", Label: "Repo"},
+		{Key: "actions", Label: "Actions"}, {Key: "via_permission_target", Label: "Via Permission Target"},
+	})
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(grantsHTML)
+
+	fmt.Fprintf(&b, "<h2>Scoped tokens (grouped by account, %d)</h2>", len(snap.Platform.ScopedTokens))
+	tokensHTML, err := renderGenericTable("access-tokens", scopedTokenRows(snap.Platform.ScopedTokens), []tableColumn{
+		{Key: "subject", Label: "Account"}, {Key: "token_id", Label: "Token ID"}, {Key: "scope", Label: "Scope"},
+		{Key: "issued", Label: "Issued"}, {Key: "expires", Label: "Expires"}, {Key: "refreshable", Label: "Refreshable"},
+	})
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(tokensHTML)
+
 	return b.String(), nil
 }
 
@@ -199,12 +272,52 @@ func renderProjectsPanel(snap *instance.Snapshot) (string, error) {
 	return b.String(), nil
 }
 
+// federationRow is the Federation & Replication tab's per-repo display row:
+// a FederatedRepo's raw member list, plus a computed Status so a degraded
+// or single-member federation config is visible at a glance instead of
+// requiring a click into the raw members blob - the same "needs 2+ enabled
+// members" signal already used for the single-member cross-resource
+// finding in resource_findings.go.
+type federationRow struct {
+	RepoKey      string                      `json:"repo_key"`
+	Status       string                      `json:"status"`
+	EnabledCount int                         `json:"enabled_members"`
+	TotalCount   int                         `json:"total_members"`
+	Members      []instance.FederationMember `json:"members"`
+}
+
+func federationRows(repos []instance.FederatedRepo) []federationRow {
+	out := make([]federationRow, len(repos))
+	for i, f := range repos {
+		enabled := 0
+		for _, m := range f.Members {
+			if m.Enabled {
+				enabled++
+			}
+		}
+		total := len(f.Members)
+		var status string
+		switch {
+		case total == 0:
+			status = "No members configured"
+		case total == 1:
+			status = "Single member (not fully federated)"
+		case enabled < total:
+			status = fmt.Sprintf("Degraded (%d/%d enabled)", enabled, total)
+		default:
+			status = fmt.Sprintf("Healthy (%d/%d enabled)", enabled, total)
+		}
+		out[i] = federationRow{RepoKey: f.RepoKey, Status: status, EnabledCount: enabled, TotalCount: total, Members: f.Members}
+	}
+	return out
+}
+
 func renderFederationReplicationPanel(snap *instance.Snapshot) (string, error) {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "<h2>Federated repos (%d)</h2>", len(snap.FederatedRepos))
-	fedHTML, err := renderGenericTable("federation-table", snap.FederatedRepos, []tableColumn{
-		{Key: "repo_key", Label: "Repo"}, {Key: "members", Label: "Members"},
+	fedHTML, err := renderGenericTable("federation-table", federationRows(snap.FederatedRepos), []tableColumn{
+		{Key: "repo_key", Label: "Repo"}, {Key: "status", Label: "Status"}, {Key: "members", Label: "Members"},
 	})
 	if err != nil {
 		return "", err
@@ -222,6 +335,105 @@ func renderFederationReplicationPanel(snap *instance.Snapshot) (string, error) {
 	b.WriteString(repHTML)
 
 	return b.String(), nil
+}
+
+// tokenRow is the Platform Config tab's per-token display row: a
+// ScopedToken with IssuedAt/Expiry rendered as human-readable dates instead
+// of raw unix seconds.
+type tokenRow struct {
+	TokenID     string `json:"token_id"`
+	Subject     string `json:"subject"`
+	Description string `json:"description,omitempty"`
+	Scope       string `json:"scope,omitempty"`
+	Issued      string `json:"issued,omitempty"`
+	Expires     string `json:"expires,omitempty"`
+	Refreshable bool   `json:"refreshable"`
+}
+
+// scopedTokenRows sorts a snapshot's scoped tokens by account (Subject),
+// then token ID, so every token belonging to the same account sits
+// together in the rendered table - the CSV/JSON already capture Subject
+// (the account) and IssuedAt (creation date) per token; this just makes
+// both visible and groups by account for an access review.
+// repoAccessRow is one direct grant: a user or group principal, one repo
+// from a permission target's scope, and the actions granted there - the
+// per-principal x per-repo view that PermissionTarget's own
+// Repos/UserActions/GroupActions (grouped the other way, by target) don't
+// give directly. A group row shows the group's own grant, not its member
+// users - group membership isn't collected by "discover instance", so
+// resolving a group grant down to individual users isn't possible from
+// this data alone.
+type repoAccessRow struct {
+	Principal     string `json:"principal"`
+	PrincipalType string `json:"principal_type"`
+	Repo          string `json:"repo"`
+	Actions       string `json:"actions"`
+	ViaTarget     string `json:"via_permission_target"`
+}
+
+// repoAccessRows inverts every permission target's Repos x
+// UserActions/GroupActions into one row per principal x repo, sorted by
+// principal (then repo) so a given user's or group's rows sit together -
+// answers "what can this user/group do, and on which repos" directly,
+// without clicking into each permission target individually.
+func repoAccessRows(perms []instance.PermissionTarget) []repoAccessRow {
+	var out []repoAccessRow
+	for _, p := range perms {
+		repos := p.Repos
+		if len(repos) == 0 {
+			repos = []string{"(none scoped)"}
+		}
+		for _, repo := range repos {
+			for user, actions := range p.UserActions {
+				out = append(out, repoAccessRow{Principal: user, PrincipalType: "user", Repo: repo, Actions: strings.Join(actions, ", "), ViaTarget: p.Name})
+			}
+			for group, actions := range p.GroupActions {
+				out = append(out, repoAccessRow{Principal: group, PrincipalType: "group", Repo: repo, Actions: strings.Join(actions, ", "), ViaTarget: p.Name})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Principal != out[j].Principal {
+			return out[i].Principal < out[j].Principal
+		}
+		if out[i].Repo != out[j].Repo {
+			return out[i].Repo < out[j].Repo
+		}
+		return out[i].ViaTarget < out[j].ViaTarget
+	})
+	return out
+}
+
+func scopedTokenRows(tokens []instance.ScopedToken) []tokenRow {
+	out := make([]tokenRow, len(tokens))
+	for i, t := range tokens {
+		out[i] = tokenRow{
+			TokenID:     t.TokenID,
+			Subject:     t.Subject,
+			Description: t.Description,
+			Scope:       t.Scope,
+			Issued:      formatUnixSeconds(t.IssuedAt, "-"),
+			Expires:     formatUnixSeconds(t.Expiry, "Never"),
+			Refreshable: t.Refreshable,
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Subject != out[j].Subject {
+			return out[i].Subject < out[j].Subject
+		}
+		return out[i].TokenID < out[j].TokenID
+	})
+	return out
+}
+
+// formatUnixSeconds renders a unix-seconds timestamp as a human-readable
+// UTC date, or zeroLabel for a zero/missing value (e.g. "-" for an unset
+// IssuedAt, "Never" for a non-expiring token's zero Expiry).
+func formatUnixSeconds(sec int64, zeroLabel string) string {
+	if sec == 0 {
+		return zeroLabel
+	}
+	return time.Unix(sec, 0).UTC().Format("2006-01-02 15:04 UTC")
 }
 
 func renderPlatformConfigPanel(snap *instance.Snapshot) (string, error) {
@@ -247,10 +459,6 @@ func renderPlatformConfigPanel(snap *instance.Snapshot) (string, error) {
 		}},
 		{"platform-environments", "Global environments", p.GlobalEnvironments, []tableColumn{
 			{Key: "name", Label: "Name"},
-		}},
-		{"platform-tokens", "Scoped tokens", p.ScopedTokens, []tableColumn{
-			{Key: "token_id", Label: "Token ID"}, {Key: "subject", Label: "Subject"}, {Key: "scope", Label: "Scope"},
-			{Key: "expiry", Label: "Expiry (unix)", Numeric: true}, {Key: "refreshable", Label: "Refreshable"},
 		}},
 		{"platform-certificates", "Certificates", p.Certificates, []tableColumn{
 			{Key: "certificateAlias", Label: "Alias"}, {Key: "issuedTo", Label: "Issued To"}, {Key: "issuedBy", Label: "Issued By"}, {Key: "validUntil", Label: "Valid Until"},
@@ -325,8 +533,43 @@ func renderXrayPanel(snap *instance.Snapshot) (string, error) {
 		{"xray-ignore-rules", "Ignore rules", x.IgnoreRules, []tableColumn{
 			{Key: "id", Label: "ID"}, {Key: "author", Label: "Author"}, {Key: "notes", Label: "Notes"}, {Key: "ignore_filters", Label: "Filters"},
 		}},
-		{"xray-curation", "Curation policies", x.CurationPolicies, []tableColumn{
+	}
+	for _, t := range tables {
+		fmt.Fprintf(&b, "<h2>%s (%d)</h2>", htmlEscape(t.label), reflectLen(t.data))
+		tableHTML, err := renderGenericTable(t.id, t.data, t.cols)
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	return b.String(), nil
+}
+
+// renderCurationPanel is its own tab, separate from the core Xray tab -
+// curation is a distinct, independently-licensed feature (see
+// XrayConfig.CurationAvailable), so it gets its own notice when unavailable
+// rather than being buried as a subsection of Xray.
+func renderCurationPanel(snap *instance.Snapshot) (string, error) {
+	x := snap.Xray
+	var b strings.Builder
+
+	if !x.CurationAvailable {
+		b.WriteString(`<div class="callout info"><strong>Curation is not enabled/available on this instance.</strong></div>`)
+		return b.String(), nil
+	}
+
+	tables := []struct {
+		id, label string
+		data      interface{}
+		cols      []tableColumn
+	}{
+		{"curation-policies", "Curation policies", x.CurationPolicies, []tableColumn{
 			{Key: "name", Label: "Name"}, {Key: "enabled", Label: "Enabled"}, {Key: "scope", Label: "Scope"}, {Key: "policy_action", Label: "Action"},
+		}},
+		{"curation-waivers", "Curation waivers", curationWaiverRows(x.CurationWaivers), []tableColumn{
+			{Key: "id", Label: "ID", Numeric: true}, {Key: "status", Label: "Status"}, {Key: "requested_by", Label: "Requested By"},
+			{Key: "justification", Label: "Justification"}, {Key: "created_at", Label: "Created"},
 		}},
 	}
 	for _, t := range tables {
@@ -339,6 +582,38 @@ func renderXrayPanel(snap *instance.Snapshot) (string, error) {
 	}
 
 	return b.String(), nil
+}
+
+// curationWaiverRow is the Curation tab's per-waiver display row: a
+// XrayCurationWaiver with its requester(s) flattened into two display
+// fields, since a waiver can (rarely) carry more than one requester.
+type curationWaiverRow struct {
+	ID            int64  `json:"id"`
+	Status        string `json:"status"`
+	CreatedAt     string `json:"created_at,omitempty"`
+	RequestedBy   string `json:"requested_by,omitempty"`
+	Justification string `json:"justification,omitempty"`
+}
+
+func curationWaiverRows(waivers []instance.XrayCurationWaiver) []curationWaiverRow {
+	out := make([]curationWaiverRow, len(waivers))
+	for i, w := range waivers {
+		var requesters, justifications []string
+		for _, r := range w.Requesters {
+			requesters = append(requesters, r.User)
+			if r.Justification != "" {
+				justifications = append(justifications, r.Justification)
+			}
+		}
+		out[i] = curationWaiverRow{
+			ID:            w.ID,
+			Status:        w.Status,
+			CreatedAt:     w.CreatedAt,
+			RequestedBy:   strings.Join(requesters, ", "),
+			Justification: strings.Join(justifications, "; "),
+		}
+	}
+	return out
 }
 
 // relProject and relRepo are the Relationships tab's embedded dataset -

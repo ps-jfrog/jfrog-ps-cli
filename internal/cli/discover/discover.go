@@ -141,13 +141,14 @@ func Run(args []string) int {
 	// pieces concurrently doesn't garble the terminal the way independent
 	// \r-based bars would.
 	mb := newMultiBar()
+	errs := &runErrors{}
 
 	runRepos := func() int {
-		return doReposReport(client, *reposCSV, *concurrency, *withPolicies, splitList(*include), splitList(*exclude), mb)
+		return doReposReport(client, *reposCSV, *concurrency, *withPolicies, splitList(*include), splitList(*exclude), mb, errs)
 	}
-	runPolicies := func() int { return doPoliciesReport(client, *policiesCSV, mb) }
+	runPolicies := func() int { return doPoliciesReport(client, *policiesCSV, mb, errs) }
 	runInstance := func() int {
-		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail, mb)
+		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail, mb, errs)
 	}
 
 	if runConcurrently {
@@ -195,12 +196,18 @@ func Run(args []string) int {
 		}
 	}
 
+	analyzeCode := 0
 	if *doAnalyze {
-		if code := doAnalyzeReport(*reposCSV, *instanceJSON, *auditHTML, *staleDays, *hugeGB, *massiveFiles, *longNameChars); code != 0 {
-			return code
+		analyzeCode = doAnalyzeReport(*reposCSV, *instanceJSON, *auditHTML, *staleDays, *hugeGB, *massiveFiles, *longNameChars)
+	}
+
+	if errList := errs.list(); len(errList) > 0 {
+		fmt.Fprintf(os.Stderr, "\nDiscovery completed with %d error(s) (continuing rather than aborting):\n", len(errList))
+		for _, e := range errList {
+			fmt.Fprintf(os.Stderr, "  - %s\n", e)
 		}
 	}
-	return 0
+	return analyzeCode
 }
 
 func printUsage() {
@@ -223,6 +230,28 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps discover -h' to see every flag (output paths, concurrency, caps, analyze thresholds).")
 	fmt.Fprintln(os.Stderr, "Everything here is read-only - none of it ever writes to Artifactory. --analyze makes no network calls at all.")
+}
+
+// runErrors collects errors hit while running the selected discovery
+// pieces (--repos/--policies/--instance), so one broken API call - even a
+// transient 5xx on the very first request - gets logged and the piece
+// skipped, rather than aborting pieces that would otherwise succeed. All
+// collected errors are summarized to stderr at the end of Run.
+type runErrors struct {
+	mu   sync.Mutex
+	errs []string
+}
+
+func (e *runErrors) add(format string, args ...interface{}) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.errs = append(e.errs, fmt.Sprintf(format, args...))
+}
+
+func (e *runErrors) list() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]string(nil), e.errs...)
 }
 
 // printNextSteps prints a "Next:" hint block to stderr so it's visible
@@ -270,7 +299,7 @@ func splitList(s string) []string {
 // repos
 // ---------------------------------------------------------------------------
 
-func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, mb *multiBar) int {
+func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, mb *multiBar, errs *runErrors) int {
 	opts := discover.ReportOptions{
 		Concurrency:  concurrency,
 		WithPolicies: withPolicies,
@@ -282,7 +311,8 @@ func doReposReport(client *jfclient.Client, csvPath string, concurrency int, wit
 	rows, warnings, err := discover.Report(client, opts)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("repos: %v", err)
+		return 0
 	}
 	for _, w := range warnings {
 		mb.Logf("discover --repos: warning: %s\n", w)
@@ -290,17 +320,20 @@ func doReposReport(client *jfclient.Client, csvPath string, concurrency int, wit
 
 	if err := ensureParentDir(csvPath); err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("repos: %v", err)
+		return 0
 	}
 	f, err := os.Create(csvPath)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("repos: %v", err)
+		return 0
 	}
 	defer f.Close()
 	if err := discover.WriteReportCSV(f, rows, withPolicies); err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("repos: %v", err)
+		return 0
 	}
 	mb.Logf("Wrote %d repo(s) to %s\n", len(rows), csvPath)
 	return 0
@@ -310,31 +343,36 @@ func doReposReport(client *jfclient.Client, csvPath string, concurrency int, wit
 // policies
 // ---------------------------------------------------------------------------
 
-func doPoliciesReport(client *jfclient.Client, csvPath string, mb *multiBar) int {
+func doPoliciesReport(client *jfclient.Client, csvPath string, mb *multiBar, errs *runErrors) int {
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("policies: %v", err)
+		return 0
 	}
 	policies, err := discover.ListCleanupPolicies(client)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("policies: %v", err)
+		return 0
 	}
 
 	if err := ensureParentDir(csvPath); err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("policies: %v", err)
+		return 0
 	}
 	f, err := os.Create(csvPath)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("policies: %v", err)
+		return 0
 	}
 	defer f.Close()
 	if err := discover.WritePoliciesCSV(f, repos, policies); err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("policies: %v", err)
+		return 0
 	}
 	mb.Logf("Wrote %d repo(s), %d policy/policies to %s\n", len(repos), len(policies), csvPath)
 	return 0
@@ -344,12 +382,14 @@ func doPoliciesReport(client *jfclient.Client, csvPath string, mb *multiBar) int
 // instance
 // ---------------------------------------------------------------------------
 
-func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool, mb *multiBar) int {
+func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool, mb *multiBar, errs *runErrors) int {
 	mb.Log("discover --instance: fetching repo list (for project repo-counts and federation targets)...")
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("instance: %v", err)
+		mb.Log("discover --instance: continuing without a repo cross-reference (project repo-counts and federated-repo detection will be incomplete)")
+		repos = nil
 	}
 
 	mb.Log("discover --instance: collecting system, security, users, groups, permissions, projects, replication, federation, platform, xray...")
@@ -368,7 +408,8 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 	snap, err := discover.CollectInstance(client, repos, collectOpts)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("instance: %v", err)
+		return 0
 	}
 	snap.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 
@@ -387,17 +428,20 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 
 	if err := ensureParentDir(outputPath); err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("instance: %v", err)
+		return 0
 	}
 	f, err := os.Create(outputPath)
 	if err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("instance: %v", err)
+		return 0
 	}
 	defer f.Close()
 	if err := instance.WriteJSON(f, snap); err != nil {
 		mb.Log("error:", err)
-		return 1
+		errs.add("instance: %v", err)
+		return 0
 	}
 	mb.Logf("Wrote %s (%d users, %d groups, %d permission targets, %d projects, %d replications, %d federated repos)\n",
 		outputPath, len(snap.Users), len(snap.Groups), len(snap.Permissions), len(snap.Projects), len(snap.Replications), len(snap.FederatedRepos))
@@ -409,30 +453,39 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 // ---------------------------------------------------------------------------
 
 func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays int, hugeGB float64, massiveFiles, longNameChars int) int {
-	f, err := os.Open(reposCSV)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: opening %s: %v (run with --repos first, or pass --repos-csv pointing at an existing report)\n", reposCSV, err)
-		return 1
+	// Both inputs are optional independently of each other: a repos-only run
+	// renders the single-panel Repos report, an instance-only run (e.g.
+	// "discover --instance" without "--repos") renders the instance tabs
+	// with an empty Repos tab, and either alone is enough to proceed. Only
+	// the combination of neither existing is a real usage error.
+	reposFound := false
+	var header []string
+	var rows []analyze.Row
+	if f, err := os.Open(reposCSV); err == nil {
+		reposFound = true
+		defer f.Close()
+		header, rows, err = analyze.ParseCSV(f)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
 	}
-	defer f.Close()
 
-	header, rows, err := analyze.ParseCSV(f)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-
-	// --instance-json is optional for --analyze: if the file isn't there,
-	// just render the single-panel repos report, same as never having run
-	// --instance at all.
+	instanceFound := false
 	var snap *instance.Snapshot
 	if instF, err := os.Open(instanceJSONPath); err == nil {
+		instanceFound = true
 		snap, err = instance.ReadJSON(instF)
 		instF.Close()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
+	}
+
+	if !reposFound && !instanceFound {
+		fmt.Fprintf(os.Stderr, "error: neither %s nor %s exists (run --repos and/or --instance first, or pass explicit --repos-csv/--instance-json paths)\n", reposCSV, instanceJSONPath)
+		return 1
 	}
 
 	opts := analyze.Options{
@@ -444,8 +497,12 @@ func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays in
 	now := time.Now()
 	analyze.ComputeFindings(header, rows, opts, now)
 
+	sourceFile := reposCSV
+	if !reposFound {
+		sourceFile = instanceJSONPath
+	}
 	html, err := analyze.Render(header, rows, analyze.RenderOptions{
-		SourceFile:  reposCSV,
+		SourceFile:  sourceFile,
 		Opts:        opts,
 		GeneratedAt: now,
 		Instance:    snap,
@@ -464,8 +521,11 @@ func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays in
 	}
 
 	suffix := ""
-	if snap == nil {
+	switch {
+	case snap == nil:
 		suffix = fmt.Sprintf(" (no %s found - repos-only report; run --instance to add Overview/Access/Projects/Federation tabs)", instanceJSONPath)
+	case !reposFound:
+		suffix = fmt.Sprintf(" (no %s found - instance-only report; run --repos to add per-repo storage/activity data)", reposCSV)
 	}
 	fmt.Fprintf(os.Stderr, "Wrote %s (%d repos analyzed)%s\n", outputPath, len(rows), suffix)
 	printNextSteps(fmt.Sprintf("open %s in a browser to explore the report", outputPath))
