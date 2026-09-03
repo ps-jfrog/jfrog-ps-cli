@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
 
 	"jfrogpscli/internal/jfclient"
@@ -78,12 +80,15 @@ func TestDeleteItems_Real(t *testing.T) {
 	jfclient.WritesDisabled = false
 	t.Cleanup(func() { jfclient.WritesDisabled = true })
 
+	var mu sync.Mutex
 	var calledPaths []string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			t.Fatalf("expected DELETE, got %s", r.Method)
 		}
+		mu.Lock()
 		calledPaths = append(calledPaths, r.URL.Path)
+		mu.Unlock()
 		if r.URL.Path == "/access/api/v2/users/bob" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -101,7 +106,9 @@ func TestDeleteItems_Real(t *testing.T) {
 	if results[1].Success || results[1].Name != "bob" {
 		t.Fatalf("expected bob to fail (404), got %+v", results[1])
 	}
-	if len(calledPaths) != 2 || calledPaths[0] != "/access/api/v2/users/alice" || calledPaths[1] != "/access/api/v2/users/bob" {
+	sort.Strings(calledPaths)
+	want := []string{"/access/api/v2/users/alice", "/access/api/v2/users/bob"}
+	if len(calledPaths) != 2 || calledPaths[0] != want[0] || calledPaths[1] != want[1] {
 		t.Fatalf("unexpected called paths: %+v", calledPaths)
 	}
 }

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"jfrogpscli/internal/jfclient"
@@ -46,13 +48,16 @@ func TestSyncPoliciesAppliesGlobalAndProjectScoped(t *testing.T) {
 	}))
 	defer source.Close()
 
+	var mu sync.Mutex
 	var calls []*http.Request
 	var bodies []map[string]interface{}
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]interface{}
 		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
 		calls = append(calls, r)
 		bodies = append(bodies, body)
+		mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer target.Close()
@@ -231,9 +236,9 @@ func TestSyncNeverUsesHardcodedServer(t *testing.T) {
 	}))
 	defer source.Close()
 
-	hits := 0
+	var hits atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		hits.Add(1)
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer target.Close()
@@ -243,7 +248,7 @@ func TestSyncNeverUsesHardcodedServer(t *testing.T) {
 	if _, err := SyncPolicies(srcClient, tgtClient, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if hits != 2 {
-		t.Fatalf("expected both policies posted to the single target server, got %d hits", hits)
+	if hits.Load() != 2 {
+		t.Fatalf("expected both policies posted to the single target server, got %d hits", hits.Load())
 	}
 }

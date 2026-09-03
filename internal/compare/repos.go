@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // skipFilenames lists exact filenames that are Artifactory-generated
@@ -211,16 +213,10 @@ func ListLocalRepos(client *jfclient.Client) ([]string, error) {
 
 // CompareRepos compares every repo in repos between source and target,
 // returning one RepoDiffResult per repo, in the same order as repos.
-func CompareRepos(source, target *jfclient.Client, repos []string) ([]RepoDiffResult, error) {
-	results := make([]RepoDiffResult, 0, len(repos))
-	for _, repo := range repos {
-		res, err := CompareRepo(source, target, repo)
-		if err != nil {
-			return results, err
-		}
-		results = append(results, res)
-	}
-	return results, nil
+func CompareRepos(source, target *jfclient.Client, repos []string, onProgress ...progress.Reporter) ([]RepoDiffResult, error) {
+	return concurrency.MapOrErr(repos, 0, func(repo string) (RepoDiffResult, error) {
+		return CompareRepo(source, target, repo)
+	}, onProgress...)
 }
 
 // WriteRepoReports writes one "<repo>.txt" file per result into dir, listing

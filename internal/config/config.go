@@ -1,15 +1,18 @@
 // Package config resolves JFrog server connection details (URL + credentials)
-// from CLI flags, environment variables, or a saved profile file, mirroring
-// the "jf config add <server-id>" convenience of the JFrog CLI without
-// depending on it.
+// from CLI flags, environment variables, a saved profile file, or a server
+// already configured in the JFrog CLI (--server-id), giving every jfps
+// command the same connection options.
 package config
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"jfrogpscli/internal/jfclient"
 )
@@ -92,6 +95,7 @@ func (s *Store) Remove(name string) error {
 type ServerFlags struct {
 	prefix   string
 	Server   string
+	ServerID string
 	URL      string
 	Token    string
 	User     string
@@ -99,19 +103,54 @@ type ServerFlags struct {
 	Insecure bool
 }
 
-// Register adds --{prefix}server, --{prefix}url, --{prefix}token,
-// --{prefix}user, --{prefix}password, and --{prefix}insecure flags to fs.
-// prefix may be "" for a single-server command, or e.g. "source-"/"target-"
-// for commands that talk to two JPDs at once.
+// Register adds --{prefix}server, --{prefix}server-id, --{prefix}url,
+// --{prefix}token, --{prefix}user, --{prefix}password, and
+// --{prefix}insecure flags to fs. prefix may be "" for a single-server
+// command, or e.g. "source-"/"target-" for commands that talk to two JPDs at
+// once.
 func Register(fs *flag.FlagSet, prefix string) *ServerFlags {
 	f := &ServerFlags{prefix: prefix}
 	fs.StringVar(&f.Server, prefix+"server", "", "Saved server profile name (see 'jfps config add')")
+	fs.StringVar(&f.ServerID, prefix+"server-id", "", "Reuse a server already configured in the JFrog CLI ('jf config add'/'jf login'); requires 'jf' on PATH")
 	fs.StringVar(&f.URL, prefix+"url", "", "JPD base URL, e.g. https://mycompany.jfrog.io")
 	fs.StringVar(&f.Token, prefix+"token", "", "Access token (bearer auth)")
 	fs.StringVar(&f.User, prefix+"user", "", "Username (basic auth, used if --token is empty)")
 	fs.StringVar(&f.Password, prefix+"password", "", "Password or identity token (basic auth)")
 	fs.BoolVar(&f.Insecure, prefix+"insecure", false, "Skip TLS certificate verification")
 	return f
+}
+
+// jfCLIServer is the subset of jfrog-cli-core's ServerDetails fields carried
+// in the JSON blob that `jf config export <server-id>` prints (base64
+// encoded, not encrypted -- see jfrog-cli-core utils/config/config.go).
+type jfCLIServer struct {
+	URL         string `json:"url"`
+	User        string `json:"user"`
+	Password    string `json:"password"`
+	AccessToken string `json:"accessToken"`
+}
+
+// resolveJFCLIServer shells out to the JFrog CLI to reuse a server already
+// configured there (via 'jf config add' or 'jf login'), so jfps commands
+// don't need their own copy of the same credentials.
+func resolveJFCLIServer(serverID string) (jfCLIServer, error) {
+	out, err := exec.Command("jf", "config", "export", serverID).Output()
+	if err != nil {
+		detail := err.Error()
+		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+			detail = strings.TrimSpace(string(ee.Stderr))
+		}
+		return jfCLIServer{}, fmt.Errorf("run 'jf config export %s' (is the JFrog CLI installed, and is %q a configured server -- see 'jf c show'?): %s", serverID, serverID, detail)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(out)))
+	if err != nil {
+		return jfCLIServer{}, fmt.Errorf("decode 'jf config export %s' output: %w", serverID, err)
+	}
+	var srv jfCLIServer
+	if err := json.Unmarshal(decoded, &srv); err != nil {
+		return jfCLIServer{}, fmt.Errorf("parse 'jf config export %s' output: %w", serverID, err)
+	}
+	return srv, nil
 }
 
 // envSuffix upper-cases and underscores a flag prefix for env var lookups,
@@ -130,11 +169,14 @@ func envSuffix(prefix string) string {
 	return string(out)
 }
 
-// Resolve builds a jfclient.Client from the flags, falling back to a saved
-// server profile (--server/--{prefix}server) and then to environment
-// variables (JFPS_URL / JFPS_ACCESS_TOKEN / JFPS_USER / JFPS_PASSWORD /
-// JFPS_INSECURE, or their SOURCE_/TARGET_-prefixed equivalents), in that
-// priority order: explicit flags > saved profile > env vars.
+// Resolve builds a jfclient.Client from the flags, falling back in this
+// priority order: explicit flags > saved jfps profile (--server) > a
+// server already configured in the JFrog CLI (--server-id, or the
+// unprefixed JFROG_CLI_SERVER_ID env var it also honors) > jfps's own env
+// vars (JFPS_URL / JFPS_ACCESS_TOKEN / JFPS_USER / JFPS_PASSWORD /
+// JFPS_INSECURE, or their SOURCE_/TARGET_-prefixed equivalents) > the
+// unprefixed JF_*/JFROG_* env vars used by 'setup-jfrog-cli' and similar CI
+// tooling for ad hoc auth.
 func (f *ServerFlags) Resolve() (*jfclient.Client, error) {
 	url, token, user, password, insecure := f.URL, f.Token, f.User, f.Password, f.Insecure
 
@@ -164,6 +206,29 @@ func (f *ServerFlags) Resolve() (*jfclient.Client, error) {
 		}
 	}
 
+	serverID := f.ServerID
+	if serverID == "" && f.prefix == "" {
+		serverID = os.Getenv("JFROG_CLI_SERVER_ID")
+	}
+	if serverID != "" && (url == "" || (token == "" && user == "")) {
+		srv, err := resolveJFCLIServer(serverID)
+		if err != nil {
+			return nil, err
+		}
+		if url == "" {
+			url = srv.URL
+		}
+		if token == "" {
+			token = srv.AccessToken
+		}
+		if user == "" {
+			user = srv.User
+		}
+		if password == "" {
+			password = srv.Password
+		}
+	}
+
 	env := envSuffix(f.prefix)
 	if url == "" {
 		url = firstNonEmptyEnv("JFPS_"+env+"URL", "JFPS_URL")
@@ -181,9 +246,24 @@ func (f *ServerFlags) Resolve() (*jfclient.Client, error) {
 		insecure = os.Getenv("JFPS_INSECURE") == "true"
 	}
 
+	if f.prefix == "" {
+		if url == "" {
+			url = firstNonEmptyEnv("JF_URL", "JFROG_URL")
+		}
+		if token == "" {
+			token = firstNonEmptyEnv("JF_ACCESS_TOKEN", "JFROG_ACCESS_TOKEN")
+		}
+		if user == "" {
+			user = firstNonEmptyEnv("JF_USER", "JFROG_USER")
+		}
+		if password == "" {
+			password = firstNonEmptyEnv("JF_PASSWORD", "JFROG_PASSWORD")
+		}
+	}
+
 	if url == "" {
 		flagName := f.prefix + "url"
-		return nil, fmt.Errorf("no JPD URL provided: pass --%s, --%sserver <name>, or set JFPS_%sURL", flagName, f.prefix, env)
+		return nil, fmt.Errorf("no JPD URL provided: pass --%s, --%sserver <name>, --%sserver-id <jf CLI server>, or set JFPS_%sURL", flagName, f.prefix, f.prefix, env)
 	}
 	if token == "" && user == "" {
 		return nil, fmt.Errorf("no credentials provided: pass --%stoken or --%suser/--%spassword", f.prefix, f.prefix, f.prefix)
@@ -208,7 +288,21 @@ func (f *ServerFlags) PeekURL() string {
 		}
 	}
 	if url == "" {
+		serverID := f.ServerID
+		if serverID == "" && f.prefix == "" {
+			serverID = os.Getenv("JFROG_CLI_SERVER_ID")
+		}
+		if serverID != "" {
+			if srv, err := resolveJFCLIServer(serverID); err == nil {
+				url = srv.URL
+			}
+		}
+	}
+	if url == "" {
 		url = firstNonEmptyEnv("JFPS_"+envSuffix(f.prefix)+"URL", "JFPS_URL")
+	}
+	if url == "" && f.prefix == "" {
+		url = firstNonEmptyEnv("JF_URL", "JFROG_URL")
 	}
 	return url
 }

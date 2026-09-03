@@ -96,21 +96,28 @@ on this for anything customer-facing, especially the more complex commands
 ## Connecting to a JPD
 
 Every subcommand accepts the same connection flags, resolved in this
-priority order: **explicit flags > saved profile (`--server <name>`) > environment
-variables**.
+priority order: **explicit flags > saved profile (`--server <name>`) > a
+server already configured in the JFrog CLI (`--server-id <id>`) > jfps
+environment variables > the JFrog CLI's own ad hoc environment variables**.
 
 ```
---url <https://mycompany.jfrog.io>   or  JFPS_URL
---token <access-token>                or  JFPS_ACCESS_TOKEN
+--url <https://mycompany.jfrog.io>   or  JFPS_URL      or  JF_URL / JFROG_URL
+--token <access-token>                or  JFPS_ACCESS_TOKEN  or  JF_ACCESS_TOKEN / JFROG_ACCESS_TOKEN
 --user / --password (basic auth fallback, used if --token is empty)
 --insecure                            (skip TLS verification)
---server <name>                       (a saved profile, see below)
+--server <name>                       (a saved jfps profile, see below)
+--server-id <id>                      (reuse a server already added via 'jf config add'/'jf login';
+                                        requires the 'jf' binary on PATH. JFROG_CLI_SERVER_ID works
+                                        the same way for single-server commands.)
 ```
 
 Commands that talk to two JPDs at once (most `compare`, `replication`
 `restore`, and the diff/sync commands) use `--source-*`/`--target-*`
-variants of every flag above, and `JFPS_SOURCE_*`/`JFPS_TARGET_*`
-environment variables.
+variants of every flag above (including `--source-server-id`/
+`--target-server-id`), and `JFPS_SOURCE_*`/`JFPS_TARGET_*` environment
+variables. `JFROG_CLI_SERVER_ID` and the unprefixed `JF_*`/`JFROG_*`
+fallbacks only apply to single-server commands, since the JFrog CLI has no
+source/target equivalents.
 
 ### Saved server profiles
 

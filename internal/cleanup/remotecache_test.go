@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"jfrogpscli/internal/jfclient"
@@ -151,9 +152,9 @@ func TestXrayArtifactSummaryEmptyPaths(t *testing.T) {
 }
 
 func TestClassifyByXrayIndexBatchesAndFiltersIndexed(t *testing.T) {
-	var callCount int
+	var callCount atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+		callCount.Add(1)
 		var req artifactSummaryRequest
 		_ = json.NewDecoder(r.Body).Decode(&req)
 		w.WriteHeader(http.StatusOK)
@@ -180,8 +181,8 @@ func TestClassifyByXrayIndexBatchesAndFiltersIndexed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if callCount != 2 {
-		t.Fatalf("expected 2 batched calls for batchSize=2 over 3 items, got %d", callCount)
+	if callCount.Load() != 2 {
+		t.Fatalf("expected 2 batched calls for batchSize=2 over 3 items, got %d", callCount.Load())
 	}
 	if len(expired) != 2 {
 		t.Fatalf("expected 2 expired candidates, got %d: %+v", len(expired), expired)

@@ -3,7 +3,9 @@ package projects
 import (
 	"fmt"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // DiffResult holds the result of comparing JFrog Projects between a source
@@ -72,15 +74,13 @@ type CreateResult struct {
 //
 // If dryRun is true, CreateMissing performs no HTTP calls whatsoever and
 // returns nil immediately.
-func CreateMissing(source, target *jfclient.Client, missing []Project, dryRun bool) []CreateResult {
+func CreateMissing(source, target *jfclient.Client, missing []Project, dryRun bool, onProgress ...progress.Reporter) []CreateResult {
 	if dryRun {
 		return nil
 	}
-	results := make([]CreateResult, 0, len(missing))
-	for _, p := range missing {
-		results = append(results, CreateResult{Key: p.ProjectKey, Err: createProject(source, target, p.ProjectKey)})
-	}
-	return results
+	return concurrency.One(missing, 0, func(p Project) CreateResult {
+		return CreateResult{Key: p.ProjectKey, Err: createProject(source, target, p.ProjectKey)}
+	}, onProgress...)
 }
 
 func createProject(source, target *jfclient.Client, key string) error {
@@ -124,15 +124,13 @@ type DeleteResult struct {
 // returns nil immediately. Callers are responsible for only invoking this
 // with dryRun=false when the user has both explicitly requested
 // --delete-extra and confirmed the action.
-func DeleteExtra(target *jfclient.Client, extra []Project, dryRun bool) []DeleteResult {
+func DeleteExtra(target *jfclient.Client, extra []Project, dryRun bool, onProgress ...progress.Reporter) []DeleteResult {
 	if dryRun {
 		return nil
 	}
-	results := make([]DeleteResult, 0, len(extra))
-	for _, p := range extra {
-		results = append(results, deleteProject(target, p.ProjectKey))
-	}
-	return results
+	return concurrency.One(extra, 0, func(p Project) DeleteResult {
+		return deleteProject(target, p.ProjectKey)
+	}, onProgress...)
 }
 
 func deleteProject(c *jfclient.Client, key string) DeleteResult {

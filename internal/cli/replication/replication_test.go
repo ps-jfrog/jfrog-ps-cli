@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"jfrogpscli/internal/jfclient"
@@ -97,10 +98,13 @@ func TestCreateFromRepoFile(t *testing.T) {
 	jfclient.WritesDisabled = false
 	t.Cleanup(func() { jfclient.WritesDisabled = true })
 
+	var mu sync.Mutex
 	var puts []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {
+			mu.Lock()
 			puts = append(puts, r.URL.Path)
+			mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		}
 	}))

@@ -3,7 +3,9 @@ package replication
 import (
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // CreateOptions holds the parameters used to build a push replication
@@ -60,25 +62,20 @@ type CreateResult struct {
 // Create builds and (unless dryRun) applies push replication configuration
 // for each repo in repos. In dry-run mode no PUT calls are made; each result
 // carries the payload that would have been sent.
-func Create(c *jfclient.Client, repos []string, opts CreateOptions, dryRun bool) []CreateResult {
-	results := make([]CreateResult, 0, len(repos))
-	for _, repo := range repos {
+func Create(c *jfclient.Client, repos []string, opts CreateOptions, dryRun bool, onProgress ...progress.Reporter) []CreateResult {
+	return concurrency.One(repos, 0, func(repo string) CreateResult {
 		payload := BuildPayload(repo, opts)
 		if dryRun {
-			results = append(results, CreateResult{Repo: repo, Payload: payload, Success: true})
-			continue
+			return CreateResult{Repo: repo, Payload: payload, Success: true}
 		}
 
 		resp, err := c.Put("/artifactory/api/replications/"+repo, payload)
 		if err != nil {
-			results = append(results, CreateResult{Repo: repo, Payload: payload, Err: err})
-			continue
+			return CreateResult{Repo: repo, Payload: payload, Err: err}
 		}
 		if err := resp.Error("create replication for " + repo); err != nil {
-			results = append(results, CreateResult{Repo: repo, Payload: payload, Err: err})
-			continue
+			return CreateResult{Repo: repo, Payload: payload, Err: err}
 		}
-		results = append(results, CreateResult{Repo: repo, Payload: payload, Success: true})
-	}
-	return results
+		return CreateResult{Repo: repo, Payload: payload, Success: true}
+	}, onProgress...)
 }

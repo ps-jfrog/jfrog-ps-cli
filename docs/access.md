@@ -5,13 +5,16 @@ permission targets (via both the legacy Security API and Access API v2),
 groups, users, and access tokens.
 
 **Safety model:** read-only subcommands (`list-*`, `show-*`, `find-empty-*`,
-`token-expiry`, `audit`, `backup`) only ever issue GET calls. Mutating
-subcommands (`create-permission`, `grant-path`, `add-repos`, `remove-repos`,
-`delete-users`, `delete-groups`, `delete-permissions`) default `--dry-run`
-to `true`. The three `delete-*` commands additionally require an
-interactive `y/N` confirmation once `--dry-run=false` is passed, unless
-`--yes` is given, and always exclude a hardcoded list of protected names
-(e.g. `admin`, `anonymous`) plus anything in `--exclude`.
+`token-expiry`, `audit`, `backup`, `effective-permissions`) only ever issue
+GET calls. Mutating subcommands (`create-permission`, `grant-path`,
+`add-repos`, `remove-repos`, `restore`, `delete-users`, `delete-groups`,
+`delete-permissions`) default `--dry-run` to `true`. `restore` and the three
+`delete-*` commands additionally require an interactive `y/N` confirmation
+once `--dry-run=false` is passed, unless `--yes` is given; the three
+`delete-*` commands also always exclude a hardcoded list of protected names
+(e.g. `admin`, `anonymous`) plus anything in `--exclude`. `restore` is
+additionally always additive-only: an entity that already exists on the
+target is skipped, never updated or overwritten.
 
 | Subcommand | What it does |
 |---|---|
@@ -27,9 +30,11 @@ interactive `y/N` confirmation once `--dry-run=false` is passed, unless
 | [`add-repos`](#add-repos) | Add repo keys to a permission target |
 | [`remove-repos`](#remove-repos) | Remove repo keys from a permission target |
 | [`backup`](#backup) | Export users/groups/permissions to local JSON files |
+| [`restore`](#restore) | Recreate users/groups/permissions from a backup directory on another JPD |
 | [`delete-users`](#delete-users) | Bulk-delete users listed in a file |
 | [`delete-groups`](#delete-groups) | Bulk-delete groups listed in a file |
 | [`delete-permissions`](#delete-permissions) | Bulk-delete permission targets listed in a file |
+| [`effective-permissions`](#effective-permissions) | Show who can access a repo, and at what action level |
 
 ---
 
@@ -263,7 +268,7 @@ sequenceDiagram
 
 ## `backup`
 
-**What it does:** Exports users, groups, and/or permissions to local JSON files. Read-only against the server — only local files are written.
+**What it does:** Exports users, groups, and/or permissions to local JSON files. Read-only against the server — only local files are written. `users.json`/`groups.json` each hold a JSON array of full per-user/per-group detail (not just names), and `permissions.json` a JSON array of full permission targets — this is the same file layout `restore` reads back in.
 
 **Key flags:** `--output` (required, output directory), `--users-only`/`--groups-only`/`--permissions-only` (default: all three)
 
@@ -276,12 +281,20 @@ sequenceDiagram
     User->>CLI: jfps access backup --output ./backup
     opt users enabled
         CLI->>JPD: GET /access/api/v2/users
-        JPD-->>CLI: users
+        JPD-->>CLI: usernames
+        loop each username
+            CLI->>JPD: GET /access/api/v2/users/{username}
+            JPD-->>CLI: full detail
+        end
         Note over CLI: write users.json
     end
     opt groups enabled
         CLI->>JPD: GET /access/api/v2/groups
-        JPD-->>CLI: groups
+        JPD-->>CLI: group names
+        loop each group
+            CLI->>JPD: GET /access/api/v2/groups/{name}
+            JPD-->>CLI: full detail
+        end
         Note over CLI: write groups.json
     end
     opt permissions enabled
@@ -292,6 +305,38 @@ sequenceDiagram
             JPD-->>CLI: detail
         end
         Note over CLI: write permissions.json
+    end
+```
+
+## `restore`
+
+**What it does:** Reads a backup directory produced by `backup` and recreates on the target server whatever users, groups, and permissions from it don't already exist there (in that order, since groups reference users and permissions reference both). An entity that already exists on the target is always **skipped**, never updated or overwritten — this is a purely additive operation, useful for cloning identity/access setup onto a new JPD or merging one org's users/groups into another's.
+
+Since a backup never carries a raw password (the Access API doesn't return one), every recreated user has `internal_password_disabled` forced to `true` regardless of its original realm — they'll need to authenticate via SSO or reset their password out of band.
+
+**Key flags:** `--input` (required, a `backup` output directory), `--user-suffix`/`--group-suffix` (appended to every restored name, and to every user/group reference inside restored group memberships and permission principals — handy for merging two orgs' identities without name collisions), `--include-users`/`--include-groups`/`--include-permissions` (comma-separated original names; default: all), `--dry-run` (default `true`), `--yes`
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as jfps access restore
+    participant JPD
+
+    User->>CLI: jfps access restore --input ./backup --dry-run=false
+    Note over CLI: read users.json/groups.json/permissions.json (missing file = nothing of that kind)
+    loop each user, then each group, then each permission
+        CLI->>JPD: GET .../{name} (does it already exist?)
+        JPD-->>CLI: 200 (skip) or 404 (candidate to create)
+    end
+    alt dry-run (default)
+        Note over CLI: print the create/skip plan, stop here
+    else --dry-run=false
+        CLI->>User: confirm "Create N entit(ies)?" [y/N]
+        User-->>CLI: y (or --yes was passed)
+        loop each candidate, in order: users, groups, permissions
+            CLI->>JPD: POST /access/api/v2/{users|groups|permissions}
+            JPD-->>CLI: 201 Created / error
+        end
     end
 ```
 
@@ -330,3 +375,23 @@ sequenceDiagram
 ## `delete-permissions`
 
 **What it does:** Bulk-deletes permission targets listed in a file, minus always-protected names (`Any Remote`, `Anything`, `INTERNAL`) and anything in `--exclude`. Same flow/flags/safety gates as `delete-users`, against `DELETE /access/api/v2/permissions/{name}`.
+
+## `effective-permissions`
+
+**What it does:** For one or more repos, shows every user and group with any access to it and at what action level (`delete`/`deploy`/`annotate`/`read`/`distribute`/`managedXrayMeta`), plus which permission target(s) grant it. This is the inverse question from `audit` (which starts from a permission target and asks "which repos does it cover"); this instead starts from a repo and asks "who can touch it and how" — useful for answering an access-review question about one specific repository without having to manually cross-reference every permission target.
+
+**Key flags:** `--repos` (required, comma-separated repo keys)
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as jfps access effective-permissions
+    participant JPD
+
+    User->>CLI: jfps access effective-permissions --repos repo1,repo2
+    loop each repo
+        CLI->>JPD: GET /artifactory/api/artifactpermissions?repoKey={repo}
+        JPD-->>CLI: userEffectivePermissions + groupEffectivePermissions
+    end
+    CLI-->>User: print one row per user/group per repo
+```

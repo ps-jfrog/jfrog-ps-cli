@@ -3,15 +3,15 @@
 Bulk-deletion and reconciliation commands: AQL-driven artifact deletion
 (with built-in "not downloaded since" query building), bulk repository
 deletion, inactive-user detection/removal, source-vs-target artifact
-reconciliation, stale Docker/OCI tag cleanup, and remote-repository cache
-cleanup gated on Xray index status.
+reconciliation, stale Docker/OCI tag cleanup, remote-repository cache
+cleanup gated on Xray index status, and recursively-empty folder cleanup.
 
 **Safety model:** every subcommand here mutates state, and every one of them
 defaults `--dry-run` to `true`. In dry-run mode, zero write calls (POST/PUT/
 DELETE) are issued — only reads. The most destructive subcommands
-(`repos`, `inactive-users`, `docker-tags`, `remote-cache`) additionally
-require an interactive `y/N` confirmation once `--dry-run=false` is passed,
-unless `--yes` is also given.
+(`repos`, `inactive-users`, `docker-tags`, `remote-cache`, `empty-folders`)
+additionally require an interactive `y/N` confirmation once `--dry-run=false`
+is passed, unless `--yes` is also given.
 
 | Subcommand | What it does |
 |---|---|
@@ -21,6 +21,7 @@ unless `--yes` is also given.
 | [`diff-delete-artifacts`](#diff-delete-artifacts) | Delete target-only artifacts so target matches source |
 | [`docker-tags`](#docker-tags) | Delete stale Docker/OCI tags (the whole tag, not just `manifest.json`) |
 | [`remote-cache`](#remote-cache) | Delete remote-cache artifacts that are download-stale **and** no longer Xray-indexed |
+| [`empty-folders`](#empty-folders) | Delete recursively-empty folders in a repo (never the repo root itself) |
 
 ---
 
@@ -294,5 +295,53 @@ sequenceDiagram
             Art-->>CLI: 204 / error
         end
         Note over CLI: print per-artifact results + delete count
+    end
+```
+
+---
+
+## `empty-folders`
+
+**What it does:** Scans a repository's folder tree and deletes folders that
+are **recursively empty** — contain no artifacts anywhere in their subtree
+(only, at most, other empty folders). The repository root is never deleted,
+even if the whole repo is empty. Rather than walking bottom-up and deleting
+one leaf folder at a time (re-checking emptiness after each delete, as the
+original script this is based on does), the whole tree is read once to
+compute the minimal set of top-level empty folders — deleting each of those
+with a single (recursive) `DELETE` removes everything beneath it too, so the
+end result is identical with far fewer HTTP calls, and dry-run can report
+the exact set of folders that would be deleted without issuing any writes.
+
+**Key flags:**
+- `--repo` (required) — repository to scan
+- `--dry-run` (default `true`)
+- `--yes` — skip the interactive confirmation prompt
+
+**Safety notes:** dry-run default; interactive confirmation required to actually delete unless `--yes` is passed; the repository root is never a delete candidate.
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant CLI as jfps cleanup empty-folders
+    participant Art as Artifactory
+
+    User->>CLI: jfps cleanup empty-folders --repo my-repo
+    loop each folder, depth-first from the repo root
+        CLI->>Art: GET /artifactory/api/storage/{repo}[/{path}]
+        Art-->>CLI: children (name, folder?)
+    end
+    Note over CLI: compute minimal set of top-level<br/>recursively-empty folders (root excluded)
+    CLI-->>User: print empty-folder candidate table
+    alt dry-run (default)
+        Note over CLI: print [DRY RUN] banner<br/>no DELETE calls issued
+    else --dry-run=false
+        CLI->>User: confirm "Delete N empty folder(s)?" [y/N]
+        User-->>CLI: y (or --yes was passed)
+        loop each candidate folder
+            CLI->>Art: DELETE /artifactory/{repo}/{path}
+            Art-->>CLI: 204 / error
+        end
+        Note over CLI: print per-folder results + delete count
     end
 ```

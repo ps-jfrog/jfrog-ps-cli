@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ReadRepoKeys reads newline-delimited repository keys from path, skipping
@@ -45,19 +47,16 @@ type RepoDeleteResult struct {
 // DeleteRepos deletes each repo key via
 // DELETE /artifactory/api/repositories/{repo}. When dryRun is true, no HTTP
 // DELETE calls are issued at all.
-func DeleteRepos(client *jfclient.Client, repos []string, dryRun bool) []RepoDeleteResult {
-	results := make([]RepoDeleteResult, 0, len(repos))
-	for _, repo := range repos {
+func DeleteRepos(client *jfclient.Client, repos []string, dryRun bool, onProgress ...progress.Reporter) []RepoDeleteResult {
+	return concurrency.One(repos, 0, func(repo string) RepoDeleteResult {
 		res := RepoDeleteResult{Repo: repo, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 		resp, err := client.Delete("/artifactory/api/repositories/" + repo)
 		if err != nil {
 			res.Error = err.Error()
-			results = append(results, res)
-			continue
+			return res
 		}
 		res.StatusCode = resp.StatusCode
 		if resp.OK() {
@@ -65,7 +64,6 @@ func DeleteRepos(client *jfclient.Client, repos []string, dryRun bool) []RepoDel
 		} else {
 			res.Error = resp.Error("delete repo").Error()
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, onProgress...)
 }

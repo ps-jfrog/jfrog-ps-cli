@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // dockerManifestNames are the file names that mark a Docker/OCI tag
@@ -66,14 +68,12 @@ func DockerTagPath(m ArtifactMatch) string {
 // for each stale manifest match, via
 // DELETE /artifactory/{repo}/{tag-path}/. When dryRun is true, no HTTP DELETE
 // calls are issued at all.
-func DeleteDockerTags(client *jfclient.Client, matches []ArtifactMatch, dryRun bool) []DeleteResult {
-	results := make([]DeleteResult, 0, len(matches))
-	for _, m := range matches {
+func DeleteDockerTags(client *jfclient.Client, matches []ArtifactMatch, dryRun bool, onProgress ...progress.Reporter) []DeleteResult {
+	return concurrency.One(matches, 0, func(m ArtifactMatch) DeleteResult {
 		tagPath := DockerTagPath(m)
 		res := DeleteResult{Match: m, Path: tagPath, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 		resp, err := client.Delete("/artifactory/" + tagPath + "/")
 		switch {
@@ -84,7 +84,6 @@ func DeleteDockerTags(client *jfclient.Client, matches []ArtifactMatch, dryRun b
 		default:
 			res.Success = true
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, onProgress...)
 }

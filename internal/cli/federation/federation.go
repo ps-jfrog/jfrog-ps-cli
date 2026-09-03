@@ -13,6 +13,7 @@ import (
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/federation"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 )
 
@@ -127,7 +128,8 @@ func runConvertToFederated(args []string) int {
 		return 0
 	}
 
-	results := federation.ConvertToFederated(client, repos, false)
+	bar := progress.New()
+	results := federation.ConvertToFederated(client, repos, false, func(done, total int) { bar.Update("Converting repos", done, total) })
 	failed := 0
 	for _, r := range results {
 		if r.Success {
@@ -158,7 +160,8 @@ func runCheckMembers(args []string) int {
 		return 1
 	}
 
-	reports, err := federation.CheckAllMembers(client, *repo, *expected)
+	bar := progress.New()
+	reports, err := federation.CheckAllMembers(client, *repo, *expected, func(done, total int) { bar.Update("Checking members", done, total) })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "federation check-members:", err)
 		return 1
@@ -224,7 +227,8 @@ func runResync(args []string) int {
 		return 0
 	}
 
-	results := federation.Resync(client, repos, false)
+	bar := progress.New()
+	results := federation.Resync(client, repos, false, func(done, total int) { bar.Update("Resyncing repos", done, total) })
 	failed := 0
 	for _, r := range results {
 		if r.Success {

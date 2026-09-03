@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // Status describes whether push replication is configured for a repo, and if
@@ -67,8 +69,10 @@ func Check(c *jfclient.Client, repo string) (Status, error) {
 }
 
 // List checks a single repo (if repo is non-empty) or every local repo, and
-// returns their replication status.
-func List(c *jfclient.Client, repo string) ([]Status, error) {
+// returns their replication status. Checks run with up to
+// concurrency.DefaultParallelism in flight at once (each is an independent,
+// read-only GET).
+func List(c *jfclient.Client, repo string, onProgress ...progress.Reporter) ([]Status, error) {
 	var repos []string
 	if repo != "" {
 		repos = []string{repo}
@@ -80,13 +84,7 @@ func List(c *jfclient.Client, repo string) ([]Status, error) {
 		}
 	}
 
-	statuses := make([]Status, 0, len(repos))
-	for _, r := range repos {
-		st, err := Check(c, r)
-		if err != nil {
-			return nil, err
-		}
-		statuses = append(statuses, st)
-	}
-	return statuses, nil
+	return concurrency.MapOrErr(repos, 0, func(r string) (Status, error) {
+		return Check(c, r)
+	}, onProgress...)
 }

@@ -7,6 +7,7 @@ package accesscmd
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/jfclient"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 )
 
@@ -40,10 +42,12 @@ var subcommands = []subcommand{
 	{"add-repos", "Add repositories to a permission target", runAddRepos},
 	{"remove-repos", "Remove repositories from a permission target", runRemoveRepos},
 	{"backup", "Back up users, groups, and permissions to JSON files", runBackup},
+	{"restore", "Recreate users, groups, and permissions from a backup directory", runRestore},
 	{"delete-users", "Delete users listed in a file", runDeleteUsers},
 	{"delete-groups", "Delete groups listed in a file", runDeleteGroups},
 	{"delete-permissions", "Delete permission targets listed in a file", runDeletePermissions},
 	{"audit", "Audit permission targets against a repo pattern/type", runAudit},
+	{"effective-permissions", "Show who can access a repo, and at what level", runEffectivePermissions},
 }
 
 // Run dispatches to the requested "jfps access <subcommand>" handler.
@@ -237,7 +241,8 @@ func runAudit(args []string) int {
 	if err != nil {
 		return fail("access audit", err)
 	}
-	matches, err := access.AuditPermissions(client, *pattern, *repoType)
+	bar := progress.New()
+	matches, err := access.AuditPermissions(client, *pattern, *repoType, func(done, total int) { bar.Update("Auditing permissions", done, total) })
 	if err != nil {
 		return fail("access audit", err)
 	}
@@ -247,6 +252,58 @@ func runAudit(args []string) int {
 	}
 	output.Table(os.Stdout, []string{"PERMISSION", "MATCHED_REPO/WILDCARD"}, rows)
 	return 0
+}
+
+func runEffectivePermissions(args []string) int {
+	fs := flag.NewFlagSet("access effective-permissions", flag.ContinueOnError)
+	sf := config.Register(fs, "")
+	repos := fs.String("repos", "", "Comma-separated repo keys (required)")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	repoList := splitCSV(*repos)
+	if len(repoList) == 0 {
+		return failf("access effective-permissions", "--repos is required")
+	}
+	client, err := sf.Resolve()
+	if err != nil {
+		return fail("access effective-permissions", err)
+	}
+	bar := progress.New()
+	perRepo, err := access.GetEffectivePermissionsForRepos(client, repoList, func(done, total int) { bar.Update("Fetching permissions", done, total) })
+	if err != nil {
+		return fail("access effective-permissions", err)
+	}
+	var rows [][]string
+	for _, r := range perRepo {
+		for _, u := range r.Users {
+			rows = append(rows, effectiveRow(r.Repo, "user", u))
+		}
+		for _, g := range r.Groups {
+			rows = append(rows, effectiveRow(r.Repo, "group", g))
+		}
+	}
+	output.Table(os.Stdout, []string{
+		"REPO", "PRINCIPAL_TYPE", "PRINCIPAL", "ADMIN", "DELETE", "DEPLOY",
+		"ANNOTATE", "READ", "DISTRIBUTE", "MANAGED_XRAY_META", "PERMISSION_TARGETS",
+	}, rows)
+	return 0
+}
+
+func effectiveRow(repo, principalType string, p access.PrincipalPermission) []string {
+	return []string{
+		repo, principalType, p.Principal,
+		formatBool(p.Admin), formatBool(p.Delete), formatBool(p.Deploy),
+		formatBool(p.Annotate), formatBool(p.Read), formatBool(p.Distribute), formatBool(p.ManagedXrayMeta),
+		strings.Join(p.PermissionTargets, ", "),
+	}
+}
+
+func formatBool(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }
 
 // ---- mutating subcommands ---------------------------------------------------
@@ -381,11 +438,13 @@ func runBackup(args []string) int {
 	if err != nil {
 		return fail("access backup", err)
 	}
+	bar := progress.New()
 	result, err := access.Backup(client, access.BackupOptions{
 		OutputDir:       *outDir,
 		UsersOnly:       *usersOnly,
 		GroupsOnly:      *groupsOnly,
 		PermissionsOnly: *permissionsOnly,
+		Progress:        func(stage string, done, total int) { bar.Update(stage, done, total) },
 	})
 	if err != nil {
 		return fail("access backup", err)
@@ -399,7 +458,139 @@ func runBackup(args []string) int {
 	if result.PermissionsFile != "" {
 		fmt.Println("Wrote", result.PermissionsFile)
 	}
+	for _, w := range result.Warnings {
+		fmt.Fprintln(os.Stderr, "access backup: warning:", w)
+	}
+	if len(result.Warnings) > 0 {
+		fmt.Fprintf(os.Stderr, "access backup: %d entit(ies) could not be fetched and were omitted from the backup.\n", len(result.Warnings))
+		return 1
+	}
 	return 0
+}
+
+func runRestore(args []string) int {
+	fs := flag.NewFlagSet("access restore", flag.ContinueOnError)
+	sf := config.Register(fs, "")
+	inputDir := fs.String("input", "", "Backup directory produced by 'access backup' (required)")
+	userSuffix := fs.String("user-suffix", "", "Suffix appended to every restored username (and group member/permission user reference)")
+	groupSuffix := fs.String("group-suffix", "", "Suffix appended to every restored group name (and permission group reference)")
+	includeUsers := fs.String("include-users", "", "Comma-separated original usernames to restore (default: all)")
+	includeGroups := fs.String("include-groups", "", "Comma-separated original group names to restore (default: all)")
+	includePermissions := fs.String("include-permissions", "", "Comma-separated permission target names to restore (default: all)")
+	dryRun := fs.Bool("dry-run", true, "Preview what would be created without applying it")
+	yes := fs.Bool("yes", false, "Skip the interactive confirmation prompt")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+	if *inputDir == "" {
+		return failf("access restore", "--input is required")
+	}
+
+	opts := access.RestoreOptions{
+		InputDir:           *inputDir,
+		UserSuffix:         *userSuffix,
+		GroupSuffix:        *groupSuffix,
+		IncludeUsers:       splitCSV(*includeUsers),
+		IncludeGroups:      splitCSV(*includeGroups),
+		IncludePermissions: splitCSV(*includePermissions),
+	}
+
+	client, err := sf.Resolve()
+	if err != nil {
+		return fail("access restore", err)
+	}
+
+	if *dryRun {
+		bar := progress.New()
+		opts.Progress = func(stage string, done, total int) { bar.Update(stage, done, total) }
+		result, err := access.Restore(client, opts, true)
+		if err != nil {
+			return fail("access restore", err)
+		}
+		printRestorePlan(result)
+		output.DryRunBanner(os.Stdout, "create the entities marked \"created\" above on the target server")
+		return 0
+	}
+
+	previewBar := progress.New()
+	opts.Progress = func(stage string, done, total int) { previewBar.Update(stage, done, total) }
+	preview, err := access.Restore(client, opts, true)
+	if err != nil {
+		return fail("access restore", err)
+	}
+	toCreate := countRestoreCreations(preview)
+	if failed := countRestoreFailures(preview); failed > 0 {
+		printRestorePlan(preview)
+		fmt.Fprintf(os.Stderr, "access restore: %d entit(ies) could not be checked on the target server; aborting without creating anything.\n", failed)
+		return 1
+	}
+	if toCreate == 0 {
+		fmt.Println("Nothing to restore: every entity in the backup already exists on the target.")
+		return 0
+	}
+	if !*yes {
+		if !output.Confirm(fmt.Sprintf("Create %d entit(ies) on the target server?", toCreate)) {
+			fmt.Println("Aborted.")
+			return 1
+		}
+	}
+
+	applyBar := progress.New()
+	opts.Progress = func(stage string, done, total int) { applyBar.Update(stage, done, total) }
+	result, err := access.Restore(client, opts, false)
+	if err != nil {
+		return fail("access restore", err)
+	}
+	printRestorePlan(result)
+	if countRestoreFailures(result) > 0 {
+		return 1
+	}
+	return 0
+}
+
+func printRestorePlan(result *access.RestoreResult) {
+	printRestoreGroup(os.Stdout, "USER", result.Users)
+	printRestoreGroup(os.Stdout, "GROUP", result.Groups)
+	printRestoreGroup(os.Stdout, "PERMISSION", result.Permissions)
+}
+
+func printRestoreGroup(w io.Writer, label string, items []access.RestoreItemResult) {
+	if len(items) == 0 {
+		return
+	}
+	rows := make([][]string, 0, len(items))
+	for _, it := range items {
+		status := string(it.Action)
+		if it.Error != "" {
+			status = "failed: " + it.Error
+		}
+		rows = append(rows, []string{it.Name, status})
+	}
+	output.Table(w, []string{label, "RESULT"}, rows)
+}
+
+func countRestoreCreations(result *access.RestoreResult) int {
+	n := 0
+	for _, items := range [][]access.RestoreItemResult{result.Users, result.Groups, result.Permissions} {
+		for _, it := range items {
+			if it.Action == access.RestoreCreated {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func countRestoreFailures(result *access.RestoreResult) int {
+	n := 0
+	for _, items := range [][]access.RestoreItemResult{result.Users, result.Groups, result.Permissions} {
+		for _, it := range items {
+			if it.Action == access.RestoreFailed {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 func runDeleteUsers(args []string) int {
@@ -455,7 +646,8 @@ func runDelete(args []string, cmdName string, kind access.DeleteKind, label stri
 	if err != nil {
 		return fail("access "+cmdName, err)
 	}
-	results := access.DeleteItems(client, kind, targets, false)
+	bar := progress.New()
+	results := access.DeleteItems(client, kind, targets, false, func(done, total int) { bar.Update("Deleting "+label+"s", done, total) })
 	failures := 0
 	for _, r := range results {
 		if r.Success {

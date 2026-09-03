@@ -14,9 +14,13 @@ func TestBackup_All(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/access/api/v2/users":
-			w.Write([]byte(`{"users":[{"name":"alice"}]}`))
+			w.Write([]byte(`{"users":[{"username":"alice"}]}`))
+		case "/access/api/v2/users/alice":
+			w.Write([]byte(`{"username":"alice","email":"alice@example.com","realm":"internal"}`))
 		case "/access/api/v2/groups":
-			w.Write([]byte(`{"groups":[{"name":"g1"}]}`))
+			w.Write([]byte(`{"groups":[{"group_name":"g1"}]}`))
+		case "/access/api/v2/groups/g1":
+			w.Write([]byte(`{"name":"g1","members":["alice"]}`))
 		case "/access/api/v2/permissions":
 			w.Write([]byte(`{"permissions":[{"name":"p1"}]}`))
 		case "/access/api/v2/permissions/p1":
@@ -49,6 +53,26 @@ func TestBackup_All(t *testing.T) {
 	}
 	if len(perms) != 1 || perms[0].Name != "p1" {
 		t.Fatalf("unexpected permissions.json content: %+v", perms)
+	}
+
+	var users []V2User
+	if data, err := os.ReadFile(filepath.Join(dir, "users.json")); err != nil {
+		t.Fatalf("read users.json: %v", err)
+	} else if err := json.Unmarshal(data, &users); err != nil {
+		t.Fatalf("unmarshal users.json: %v", err)
+	}
+	if len(users) != 1 || users[0].Username != "alice" || users[0].Email != "alice@example.com" {
+		t.Fatalf("unexpected users.json content: %+v", users)
+	}
+
+	var groups []V2Group
+	if data, err := os.ReadFile(filepath.Join(dir, "groups.json")); err != nil {
+		t.Fatalf("read groups.json: %v", err)
+	} else if err := json.Unmarshal(data, &groups); err != nil {
+		t.Fatalf("unmarshal groups.json: %v", err)
+	}
+	if len(groups) != 1 || groups[0].Name != "g1" || len(groups[0].Members) != 1 {
+		t.Fatalf("unexpected groups.json content: %+v", groups)
 	}
 }
 

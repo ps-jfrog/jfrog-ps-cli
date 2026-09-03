@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // buildsListResponse is the shape of GET /artifactory/api/build.
@@ -198,12 +200,10 @@ type BuildMigrationResult struct {
 // dryRun is true, PUTs it to target. In dry-run mode (the default), no PUT
 // calls are issued at all -- every result is returned with DryRun=true and
 // Success=false, purely describing what would happen.
-func MigrateBuildPairs(source, target *jfclient.Client, pairs []BuildPair, dryRun bool) []BuildMigrationResult {
-	results := make([]BuildMigrationResult, 0, len(pairs))
-	for _, p := range pairs {
-		results = append(results, migrateOneBuild(source, target, p.Name, p.Number, dryRun))
-	}
-	return results
+func MigrateBuildPairs(source, target *jfclient.Client, pairs []BuildPair, dryRun bool, onProgress ...progress.Reporter) []BuildMigrationResult {
+	return concurrency.One(pairs, 0, func(p BuildPair) BuildMigrationResult {
+		return migrateOneBuild(source, target, p.Name, p.Number, dryRun)
+	}, onProgress...)
 }
 
 func migrateOneBuild(source, target *jfclient.Client, name, number string, dryRun bool) BuildMigrationResult {

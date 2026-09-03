@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // DisableResult is the outcome of attempting to disable replication for one
@@ -43,40 +45,32 @@ func disablePayload(raw []byte) ([]byte, error) {
 // Disable fetches the existing replication config for each repo, sets
 // enabled=false (on every element if the config is an array), and writes it
 // back. In dry-run mode no GET/PUT calls are made.
-func Disable(c *jfclient.Client, repos []string, dryRun bool) []DisableResult {
-	results := make([]DisableResult, 0, len(repos))
-	for _, repo := range repos {
+func Disable(c *jfclient.Client, repos []string, dryRun bool, onProgress ...progress.Reporter) []DisableResult {
+	return concurrency.One(repos, 0, func(repo string) DisableResult {
 		if dryRun {
-			results = append(results, DisableResult{Repo: repo, Success: true})
-			continue
+			return DisableResult{Repo: repo, Success: true}
 		}
 
 		getResp, err := c.Get("/artifactory/api/replications/" + repo)
 		if err != nil {
-			results = append(results, DisableResult{Repo: repo, Err: err})
-			continue
+			return DisableResult{Repo: repo, Err: err}
 		}
 		if err := getResp.Error("get replication config for " + repo); err != nil {
-			results = append(results, DisableResult{Repo: repo, Err: err})
-			continue
+			return DisableResult{Repo: repo, Err: err}
 		}
 
 		newBody, err := disablePayload(getResp.Body)
 		if err != nil {
-			results = append(results, DisableResult{Repo: repo, Err: fmt.Errorf("parse replication config for %s: %w", repo, err)})
-			continue
+			return DisableResult{Repo: repo, Err: fmt.Errorf("parse replication config for %s: %w", repo, err)}
 		}
 
 		putResp, err := c.Put("/artifactory/api/replications/"+repo, json.RawMessage(newBody))
 		if err != nil {
-			results = append(results, DisableResult{Repo: repo, Err: err})
-			continue
+			return DisableResult{Repo: repo, Err: err}
 		}
 		if err := putResp.Error("disable replication for " + repo); err != nil {
-			results = append(results, DisableResult{Repo: repo, Err: err})
-			continue
+			return DisableResult{Repo: repo, Err: err}
 		}
-		results = append(results, DisableResult{Repo: repo, Success: true})
-	}
-	return results
+		return DisableResult{Repo: repo, Success: true}
+	}, onProgress...)
 }

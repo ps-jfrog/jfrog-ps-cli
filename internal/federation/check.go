@@ -3,7 +3,9 @@ package federation
 import (
 	"fmt"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // Member is one member of a federated repository, as embedded in the
@@ -65,7 +67,7 @@ func CheckMembers(c *jfclient.Client, repo string, expectedMembers int) (MemberR
 
 // CheckAllMembers checks a single repo (if repo is non-empty) or every
 // federated repo on the server.
-func CheckAllMembers(c *jfclient.Client, repo string, expectedMembers int) ([]MemberReport, error) {
+func CheckAllMembers(c *jfclient.Client, repo string, expectedMembers int, onProgress ...progress.Reporter) ([]MemberReport, error) {
 	var repos []string
 	if repo != "" {
 		repos = []string{repo}
@@ -77,13 +79,7 @@ func CheckAllMembers(c *jfclient.Client, repo string, expectedMembers int) ([]Me
 		}
 	}
 
-	reports := make([]MemberReport, 0, len(repos))
-	for _, r := range repos {
-		rep, err := CheckMembers(c, r, expectedMembers)
-		if err != nil {
-			return nil, err
-		}
-		reports = append(reports, rep)
-	}
-	return reports, nil
+	return concurrency.MapOrErr(repos, 0, func(r string) (MemberReport, error) {
+		return CheckMembers(c, r, expectedMembers)
+	}, onProgress...)
 }

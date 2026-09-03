@@ -16,6 +16,7 @@ import (
 	"jfrogpscli/internal/cleanup"
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 )
 
@@ -47,6 +48,8 @@ func Run(args []string) int {
 		return runDockerTags(rest)
 	case "remote-cache":
 		return runRemoteCache(rest)
+	case "empty-folders":
+		return runEmptyFolders(rest)
 	default:
 		fmt.Fprintf(os.Stderr, "cleanup: unknown subcommand %q\n\n", sub)
 		printUsage()
@@ -64,6 +67,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  diff-delete-artifacts   Delete target-only artifacts to match source")
 	fmt.Fprintln(os.Stderr, "  docker-tags             Delete stale Docker/OCI tags (full tag dir, not just manifest.json)")
 	fmt.Fprintln(os.Stderr, "  remote-cache            Delete remote-cache artifacts that are download-stale AND not Xray-indexed")
+	fmt.Fprintln(os.Stderr, "  empty-folders           Delete recursively-empty folders in a repo (never the repo root itself)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps cleanup <subcommand> -h' for subcommand-specific flags.")
 	fmt.Fprintln(os.Stderr, "Every mutating subcommand defaults to --dry-run=true.")
@@ -120,13 +124,14 @@ func runArtifacts(args []string) int {
 		return 0
 	}
 
+	bar := progress.New()
 	if *dryRun {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("delete %d artifact(s)", len(matches)))
-		cleanup.DeleteArtifacts(client, matches, true)
+		cleanup.DeleteArtifacts(client, matches, true, func(done, total int) { bar.Update("Deleting artifacts", done, total) })
 		return 0
 	}
 
-	results := cleanup.DeleteArtifacts(client, matches, false)
+	results := cleanup.DeleteArtifacts(client, matches, false, func(done, total int) { bar.Update("Deleting artifacts", done, total) })
 	return reportArtifactDeleteResults(results)
 }
 
@@ -240,7 +245,8 @@ func runRepos(args []string) int {
 			rows = append(rows, []string{r})
 		}
 		output.Table(os.Stdout, []string{"REPO"}, rows)
-		cleanup.DeleteRepos(client, repos, true)
+		bar := progress.New()
+		cleanup.DeleteRepos(client, repos, true, func(done, total int) { bar.Update("Deleting repos", done, total) })
 		return 0
 	}
 
@@ -249,7 +255,8 @@ func runRepos(args []string) int {
 		return 1
 	}
 
-	results := cleanup.DeleteRepos(client, repos, false)
+	bar := progress.New()
+	results := cleanup.DeleteRepos(client, repos, false, func(done, total int) { bar.Update("Deleting repos", done, total) })
 	rows := make([][]string, 0, len(results))
 	failures := 0
 	for _, r := range results {
@@ -262,6 +269,80 @@ func runRepos(args []string) int {
 	}
 	output.Table(os.Stdout, []string{"REPO", "RESULT"}, rows)
 	fmt.Fprintf(os.Stdout, "Deleted %d/%d repo(s).\n", len(results)-failures, len(results))
+	if failures > 0 {
+		return 1
+	}
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// empty-folders
+// ---------------------------------------------------------------------------
+
+func runEmptyFolders(args []string) int {
+	fs := flag.NewFlagSet("cleanup empty-folders", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	serverFlags := config.Register(fs, "")
+	repo := fs.String("repo", "", "Repository to scan for recursively-empty folders (required)")
+	dryRun := fs.Bool("dry-run", true, "If true (default), only show which folders would be deleted")
+	yes := fs.Bool("yes", false, "Skip the interactive confirmation prompt")
+	if err := fs.Parse(args); err != nil {
+		return 1
+	}
+
+	if *repo == "" {
+		fmt.Fprintln(os.Stderr, "cleanup empty-folders: --repo is required")
+		return 1
+	}
+
+	client, err := serverFlags.Resolve()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup empty-folders: %v\n", err)
+		return 1
+	}
+
+	folders, err := cleanup.FindEmptyFolders(client, *repo)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cleanup empty-folders: %v\n", err)
+		return 1
+	}
+
+	fmt.Fprintf(os.Stdout, "Found %d recursively-empty folder(s) in %s.\n", len(folders), *repo)
+	if len(folders) == 0 {
+		return 0
+	}
+	rows := make([][]string, 0, len(folders))
+	for _, f := range folders {
+		rows = append(rows, []string{f})
+	}
+	output.Table(os.Stdout, []string{"FOLDER"}, rows)
+
+	if *dryRun {
+		output.DryRunBanner(os.Stdout, fmt.Sprintf("delete %d empty folder(s) from %s", len(folders), *repo))
+		bar := progress.New()
+		cleanup.DeleteEmptyFolders(client, *repo, folders, true, func(done, total int) { bar.Update("Deleting folders", done, total) })
+		return 0
+	}
+
+	if !*yes && !output.Confirm(fmt.Sprintf("Delete %d empty folder(s) from %q?", len(folders), *repo)) {
+		fmt.Fprintln(os.Stdout, "Aborted.")
+		return 1
+	}
+
+	bar := progress.New()
+	results := cleanup.DeleteEmptyFolders(client, *repo, folders, false, func(done, total int) { bar.Update("Deleting folders", done, total) })
+	rows = make([][]string, 0, len(results))
+	failures := 0
+	for _, r := range results {
+		status := "OK"
+		if !r.Success {
+			status = "FAILED: " + r.Error
+			failures++
+		}
+		rows = append(rows, []string{r.Path, status})
+	}
+	output.Table(os.Stdout, []string{"FOLDER", "RESULT"}, rows)
+	fmt.Fprintf(os.Stdout, "Deleted %d/%d folder(s).\n", len(results)-failures, len(results))
 	if failures > 0 {
 		return 1
 	}
@@ -316,7 +397,8 @@ func runInactiveUsers(args []string) int {
 
 	if *dryRun {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("delete %d user(s)", len(candidates)))
-		cleanup.DeleteUsers(client, candidates, true)
+		bar := progress.New()
+		cleanup.DeleteUsers(client, candidates, true, func(done, total int) { bar.Update("Deleting users", done, total) })
 		return 0
 	}
 
@@ -325,7 +407,8 @@ func runInactiveUsers(args []string) int {
 		return 1
 	}
 
-	results := cleanup.DeleteUsers(client, candidates, false)
+	bar := progress.New()
+	results := cleanup.DeleteUsers(client, candidates, false, func(done, total int) { bar.Update("Deleting users", done, total) })
 	rows = make([][]string, 0, len(results))
 	failures := 0
 	for _, r := range results {
@@ -398,7 +481,8 @@ func runDiffDeleteArtifacts(args []string) int {
 
 	if *dryRun {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("delete %d artifact(s) from target", len(candidates)))
-		cleanup.DeleteArtifacts(target, candidates, true)
+		bar := progress.New()
+		cleanup.DeleteArtifacts(target, candidates, true, func(done, total int) { bar.Update("Deleting artifacts", done, total) })
 		return 0
 	}
 
@@ -407,7 +491,8 @@ func runDiffDeleteArtifacts(args []string) int {
 		return 1
 	}
 
-	results := cleanup.DeleteArtifacts(target, candidates, false)
+	bar := progress.New()
+	results := cleanup.DeleteArtifacts(target, candidates, false, func(done, total int) { bar.Update("Deleting artifacts", done, total) })
 	return reportArtifactDeleteResults(results)
 }
 
@@ -465,7 +550,8 @@ func runDockerTags(args []string) int {
 
 	if *dryRun {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("delete %d Docker tag(s) (full tag directory, not just manifest.json)", len(matches)))
-		cleanup.DeleteDockerTags(client, matches, true)
+		bar := progress.New()
+		cleanup.DeleteDockerTags(client, matches, true, func(done, total int) { bar.Update("Deleting tags", done, total) })
 		return 0
 	}
 
@@ -474,7 +560,8 @@ func runDockerTags(args []string) int {
 		return 1
 	}
 
-	results := cleanup.DeleteDockerTags(client, matches, false)
+	bar := progress.New()
+	results := cleanup.DeleteDockerTags(client, matches, false, func(done, total int) { bar.Update("Deleting tags", done, total) })
 	return reportArtifactDeleteResults(results)
 }
 
@@ -529,7 +616,8 @@ func runRemoteCache(args []string) int {
 	}
 	fmt.Fprintf(os.Stdout, "Found %d download-stale candidate(s); checking Xray index status...\n", len(staleCandidates))
 
-	expired, err := cleanup.ClassifyByXrayIndex(client, staleCandidates, *batchSize)
+	classifyBar := progress.New()
+	expired, err := cleanup.ClassifyByXrayIndex(client, staleCandidates, *batchSize, func(done, total int) { classifyBar.Update("Checking Xray index", done, total) })
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "cleanup remote-cache: %v\n", err)
 		return 1
@@ -557,7 +645,8 @@ func runRemoteCache(args []string) int {
 
 	if *dryRun {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("delete %d remote-cache artifact(s) from %s", len(expired), cacheRepo))
-		cleanup.DeleteRemoteCacheCandidates(client, expired, pkg, true)
+		bar := progress.New()
+		cleanup.DeleteRemoteCacheCandidates(client, expired, pkg, true, func(done, total int) { bar.Update("Deleting artifacts", done, total) })
 		return 0
 	}
 
@@ -566,7 +655,8 @@ func runRemoteCache(args []string) int {
 		return 1
 	}
 
-	results := cleanup.DeleteRemoteCacheCandidates(client, expired, pkg, false)
+	bar := progress.New()
+	results := cleanup.DeleteRemoteCacheCandidates(client, expired, pkg, false, func(done, total int) { bar.Update("Deleting artifacts", done, total) })
 	return reportArtifactDeleteResults(results)
 }
 

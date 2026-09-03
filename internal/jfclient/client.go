@@ -31,10 +31,18 @@ type Client struct {
 	HTTPClient *http.Client
 }
 
+// maxIdleConnsPerHost raises the transport's per-host idle connection pool
+// past net/http's default of 2, so the concurrent bulk operations this CLI
+// runs (internal/concurrency, discover's own --concurrency) actually reuse
+// connections instead of paying a new TCP+TLS handshake for most of every
+// batch -- a zero-value http.Transport (the previous default here) caps
+// reuse at 2 connections regardless of how many requests run at once.
+const maxIdleConnsPerHost = 32
+
 // New creates a Client with sane defaults (30s timeout). If insecure is true,
 // TLS certificate verification is disabled (useful for self-signed test JPDs).
 func New(baseURL, token, user, password string, insecure bool) *Client {
-	tr := &http.Transport{}
+	tr := &http.Transport{MaxIdleConnsPerHost: maxIdleConnsPerHost}
 	if insecure {
 		tr.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec
 	}
@@ -89,14 +97,25 @@ func (r *Response) Error(context string) error {
 // real writes for the duration of a single test.
 var WritesDisabled = true
 
-// readOnlyPostPaths lists POST endpoints that are actually read-only queries
-// despite using POST (some JFrog APIs take a filter/query body on POST
-// rather than GET): AQL search, the Xray artifact-summary lookup, and Xray's
-// report-listing endpoint. Every other POST is treated as a write.
+// readOnlyPostPaths lists POST endpoints that are exempt from the write
+// guard despite using POST. Most are read-only queries that happen to take
+// a filter/query body on POST rather than GET (AQL search, the Xray
+// artifact-summary lookup, Xray's report-listing endpoint). The three Xray
+// report-generation endpoints are the one deliberate exception to "POST
+// means write": they create a transient, self-cleaning analysis artifact
+// (an Xray report), not persistent JPD configuration/content, and the
+// generate/export/delete lifecycle around them already treats the final
+// cleanup DELETE as best-effort -- so if writes are disabled, report
+// generation still works and simply leaves the report undeleted rather than
+// failing outright. Explicit user-initiated report deletion (`xray reports
+// delete`) is unaffected: DELETE is never exempted here.
 var readOnlyPostPaths = map[string]bool{
-	"/artifactory/api/search/aql":   true,
-	"/xray/api/v1/summary/artifact": true,
-	"/xray/api/v1/reports":          true,
+	"/artifactory/api/search/aql":          true,
+	"/xray/api/v1/summary/artifact":        true,
+	"/xray/api/v1/reports":                 true,
+	"/xray/api/v1/reports/violations":      true,
+	"/xray/api/v1/reports/vulnerabilities": true,
+	"/xray/api/v1/reports/exposures":       true,
 }
 
 // checkWriteAllowed refuses any request that would mutate or delete state on

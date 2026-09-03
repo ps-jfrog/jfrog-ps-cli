@@ -14,9 +14,10 @@ import (
 // Repo is a summary of an Artifactory repository as returned by
 // GET /artifactory/api/repositories.
 type Repo struct {
-	Key  string `json:"key"`
-	Type string `json:"type"`
-	URL  string `json:"url"`
+	Key         string `json:"key"`
+	Type        string `json:"type"`
+	URL         string `json:"url"`
+	PackageType string `json:"packageType"`
 }
 
 // List returns the repositories of the given type from c. repoType may be

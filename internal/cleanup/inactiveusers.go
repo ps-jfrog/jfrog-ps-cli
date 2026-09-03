@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // UserActivity represents one Artifactory user's login activity.
@@ -72,13 +74,11 @@ type UserDeleteResult struct {
 
 // DeleteUsers deletes each user via DELETE /access/api/v2/users/{name}. When
 // dryRun is true, no HTTP DELETE calls are issued at all.
-func DeleteUsers(client *jfclient.Client, users []UserActivity, dryRun bool) []UserDeleteResult {
-	results := make([]UserDeleteResult, 0, len(users))
-	for _, u := range users {
+func DeleteUsers(client *jfclient.Client, users []UserActivity, dryRun bool, onProgress ...progress.Reporter) []UserDeleteResult {
+	return concurrency.One(users, 0, func(u UserActivity) UserDeleteResult {
 		res := UserDeleteResult{Name: u.Name, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 		resp, err := client.Delete("/access/api/v2/users/" + u.Name)
 		switch {
@@ -89,7 +89,6 @@ func DeleteUsers(client *jfclient.Client, users []UserActivity, dryRun bool) []U
 		default:
 			res.Success = true
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, onProgress...)
 }

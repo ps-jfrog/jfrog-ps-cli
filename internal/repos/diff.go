@@ -3,7 +3,9 @@ package repos
 import (
 	"fmt"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // DiffResult holds the result of comparing repositories of a given type
@@ -65,15 +67,13 @@ type CreateResult struct {
 //
 // If dryRun is true, CopyMissing performs no HTTP calls whatsoever -- not
 // even reads -- and returns nil immediately.
-func CopyMissing(source, target *jfclient.Client, missing []Repo, dryRun bool) []CreateResult {
+func CopyMissing(source, target *jfclient.Client, missing []Repo, dryRun bool, onProgress ...progress.Reporter) []CreateResult {
 	if dryRun {
 		return nil
 	}
-	results := make([]CreateResult, 0, len(missing))
-	for _, r := range missing {
-		results = append(results, CreateResult{Key: r.Key, Err: copyRepoConfig(source, target, r.Key)})
-	}
-	return results
+	return concurrency.One(missing, 0, func(r Repo) CreateResult {
+		return CreateResult{Key: r.Key, Err: copyRepoConfig(source, target, r.Key)}
+	}, onProgress...)
 }
 
 func copyRepoConfig(source, target *jfclient.Client, key string) error {

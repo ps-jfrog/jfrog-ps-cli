@@ -6,7 +6,9 @@ import (
 	"os"
 	"sort"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // LoadBackupFile reads a backup file produced by WriteBackupFile.
@@ -33,30 +35,25 @@ type RestoreResult struct {
 // Restore writes each repo's config from data back via PUT
 // /artifactory/api/replications/{repo}. Results are returned in a stable,
 // sorted-by-repo order. In dry-run mode no PUT calls are made.
-func Restore(c *jfclient.Client, data map[string]json.RawMessage, dryRun bool) []RestoreResult {
+func Restore(c *jfclient.Client, data map[string]json.RawMessage, dryRun bool, onProgress ...progress.Reporter) []RestoreResult {
 	repos := make([]string, 0, len(data))
 	for repo := range data {
 		repos = append(repos, repo)
 	}
 	sort.Strings(repos)
 
-	results := make([]RestoreResult, 0, len(repos))
-	for _, repo := range repos {
+	return concurrency.One(repos, 0, func(repo string) RestoreResult {
 		if dryRun {
-			results = append(results, RestoreResult{Repo: repo, Success: true})
-			continue
+			return RestoreResult{Repo: repo, Success: true}
 		}
 
 		resp, err := c.Put("/artifactory/api/replications/"+repo, data[repo])
 		if err != nil {
-			results = append(results, RestoreResult{Repo: repo, Err: err})
-			continue
+			return RestoreResult{Repo: repo, Err: err}
 		}
 		if err := resp.Error("restore replication for " + repo); err != nil {
-			results = append(results, RestoreResult{Repo: repo, Err: err})
-			continue
+			return RestoreResult{Repo: repo, Err: err}
 		}
-		results = append(results, RestoreResult{Repo: repo, Success: true})
-	}
-	return results
+		return RestoreResult{Repo: repo, Success: true}
+	}, onProgress...)
 }

@@ -7,12 +7,22 @@ import (
 	"regexp"
 	"sort"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ErrPermissionNotFound is returned by GetPermissionV2 when the Access API
 // v2 responds with HTTP 404 for a permission name.
 var ErrPermissionNotFound = errors.New("permission not found")
+
+// ErrUserNotFound is returned by GetUserV2 when the Access API v2 responds
+// with HTTP 404 for a username.
+var ErrUserNotFound = errors.New("user not found")
+
+// ErrGroupNotFound is returned by GetGroupV2 when the Access API v2
+// responds with HTTP 404 for a group name.
+var ErrGroupNotFound = errors.New("group not found")
 
 // V2Target is one repository's entry under resources.<resource>.targets in
 // the Access API v2 permission shape.
@@ -336,7 +346,7 @@ type AuditMatch struct {
 // (a regular expression), OR a wildcard target key ("ANY", "ANY LOCAL", "ANY
 // REMOTE") that implicitly covers repos of repoType (pass "" to match any
 // wildcard regardless of type).
-func AuditPermissions(c *jfclient.Client, repoPattern, repoType string) ([]AuditMatch, error) {
+func AuditPermissions(c *jfclient.Client, repoPattern, repoType string, onProgress ...progress.Reporter) ([]AuditMatch, error) {
 	re, err := regexp.Compile(repoPattern)
 	if err != nil {
 		return nil, fmt.Errorf("invalid repo pattern %q: %w", repoPattern, err)
@@ -345,18 +355,17 @@ func AuditPermissions(c *jfclient.Client, repoPattern, repoType string) ([]Audit
 	if err != nil {
 		return nil, err
 	}
-	var matches []AuditMatch
-	for _, ref := range refs {
+	return concurrency.MapSliceOrErr(refs, 0, func(ref PermissionRefV2) ([]AuditMatch, error) {
 		p, err := GetPermissionV2(c, ref.Name)
 		if err != nil {
 			return nil, err
 		}
 		res, ok := p.Resources["artifact"]
 		if !ok {
-			continue
+			return nil, nil
 		}
-		keys := targetKeys(res.Targets)
-		for _, target := range keys {
+		var matches []AuditMatch
+		for _, target := range targetKeys(res.Targets) {
 			if isWildcardTarget(target, repoType) {
 				matches = append(matches, AuditMatch{Permission: p.Name, Matched: target})
 				continue
@@ -365,8 +374,8 @@ func AuditPermissions(c *jfclient.Client, repoPattern, repoType string) ([]Audit
 				matches = append(matches, AuditMatch{Permission: p.Name, Matched: target})
 			}
 		}
-	}
-	return matches, nil
+		return matches, nil
+	}, onProgress...)
 }
 
 func isWildcardTarget(target, repoType string) bool {

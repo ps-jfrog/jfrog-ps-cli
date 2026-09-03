@@ -1,6 +1,7 @@
 package xraycmd
 
 import (
+	"archive/zip"
 	"bytes"
 	"io"
 	"net/http"
@@ -11,6 +12,25 @@ import (
 
 	"jfrogpscli/internal/jfclient"
 )
+
+// zipCSV wraps csvBody as the single-file ZIP that
+// GET /xray/api/v1/reports/export/{id} returns.
+func zipCSV(t *testing.T, name, csvBody string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	f, err := zw.Create(name + ".csv")
+	if err != nil {
+		t.Fatalf("create zip entry: %v", err)
+	}
+	if _, err := f.Write([]byte(csvBody)); err != nil {
+		t.Fatalf("write zip entry: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip: %v", err)
+	}
+	return buf.Bytes()
+}
 
 // captureStdout redirects os.Stdout for the duration of fn and returns
 // whatever was written to it. Subcommands under test print directly via
@@ -148,6 +168,52 @@ func TestIndexReindexDryRunDefaultMakesNoCalls(t *testing.T) {
 		t.Fatalf("expected dry-run banner, got: %s", out)
 	}
 }
+
+func TestIndexJASToggleRequiresExactlyOneScope(t *testing.T) {
+	code := Run([]string{"index", "jas-toggle", "--enable-exposures", "--url", "http://example.invalid", "--token", "tok"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when none of --repo/--project/--repos-file given, got %d", code)
+	}
+	code = Run([]string{"index", "jas-toggle", "--repo", "repo-a", "--project", "proj", "--enable-exposures", "--url", "http://example.invalid", "--token", "tok"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when both --repo and --project given, got %d", code)
+	}
+}
+
+func TestIndexJASToggleRequiresAtLeastOneChange(t *testing.T) {
+	code := Run([]string{"index", "jas-toggle", "--repo", "repo-a", "--url", "http://example.invalid", "--token", "tok"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 when no toggle/retention flag given, got %d", code)
+	}
+}
+
+func TestIndexJASToggleDryRunDefaultMakesNoPUT(t *testing.T) {
+	srv := httptest.NewServer(guardNoMutations(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(sampleRepoConfigJSON))
+	})))
+	defer srv.Close()
+
+	var code int
+	out := captureStdout(t, func() {
+		code = Run([]string{"index", "jas-toggle", "--repo", "repo-a", "--enable-exposures", "--url", srv.URL, "--token", "tok"})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d, output=%s", code, out)
+	}
+	if !strings.Contains(out, "DRY RUN") {
+		t.Fatalf("expected dry-run banner, got: %s", out)
+	}
+}
+
+const sampleRepoConfigJSON = `{
+  "repo_name": "repo-a",
+  "repo_config": {
+    "vuln_contextual_analysis": false,
+    "retention_in_days": 90,
+    "exposures": {"scanners_category": {"secrets_scan": false}}
+  },
+  "repo_paths_config": {}
+}`
 
 func TestReportsListReadOnly(t *testing.T) {
 	srv := httptest.NewServer(guardOnlyPost(t, "/xray/api/v1/reports", func(w http.ResponseWriter, r *http.Request) {
@@ -304,4 +370,114 @@ func guardOnlyPost(t *testing.T, path string, handler http.HandlerFunc) http.Han
 		}
 		handler(w, r)
 	})
+}
+
+// ---------------------------------------------------------------------------
+// reports generate
+// ---------------------------------------------------------------------------
+
+func TestReportsGenerateRequiresExactlyOneScope(t *testing.T) {
+	if code := Run([]string{"reports", "generate", "--url", "http://example.invalid", "--token", "tok"}); code != 1 {
+		t.Fatalf("expected exit code 1 with no scope, got %d", code)
+	}
+	code := Run([]string{"reports", "generate", "--reponame", "a", "--project", "b", "--url", "http://example.invalid", "--token", "tok"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 with both --reponame and --project, got %d", code)
+	}
+}
+
+func TestReportsGenerateRejectsResourceTypeBuildsWithWatchname(t *testing.T) {
+	// Regression: --resource-type=builds and --watchname used to both pass
+	// validation when combined (scopeCount==0 either way), and
+	// ResolveReportScope would then silently pick instance-wide builds and
+	// drop --watchname entirely.
+	code := Run([]string{"reports", "generate", "--resource-type", "builds", "--watchname", "my-watch", "--url", "http://example.invalid", "--token", "tok"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 combining --resource-type=builds with --watchname, got %d", code)
+	}
+}
+
+func TestReportsGenerateRequiresExposureCategory(t *testing.T) {
+	code := Run([]string{"reports", "generate", "--reponame", "repo-a", "--report-type", "exposures", "--url", "http://example.invalid", "--token", "tok"})
+	if code != 1 {
+		t.Fatalf("expected exit code 1 without --exposure-category, got %d", code)
+	}
+}
+
+func TestReportsGenerateEndToEnd(t *testing.T) {
+	csvBody := "repository,impacted_artifact,severity\nrepo-a,path/one.jar,High\n"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/xray/api/v1/reports/violations", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"report_id": 1}`))
+	})
+	mux.HandleFunc("/xray/api/v1/reports/1", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"completed","name":"x"}`))
+	})
+	mux.HandleFunc("/xray/api/v1/reports/export/1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(zipCSV(t, "x", csvBody))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	var code int
+	out := captureStdout(t, func() {
+		code = Run([]string{"reports", "generate", "--reponame", "repo-a", "--output-dir", outDir, "--url", srv.URL, "--token", "tok"})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d, output=%s", code, out)
+	}
+	if !strings.Contains(out, "REPORT") {
+		t.Fatalf("expected the results table to be printed, got: %s", out)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// reports segregate-by-deployer
+// ---------------------------------------------------------------------------
+
+func TestReportsSegregateByDeployerRequiresWatchname(t *testing.T) {
+	if code := Run([]string{"reports", "segregate-by-deployer", "--url", "http://example.invalid", "--token", "tok"}); code != 1 {
+		t.Fatalf("expected exit code 1 without --watchname, got %d", code)
+	}
+}
+
+func TestReportsSegregateByDeployerEndToEnd(t *testing.T) {
+	csvBody := "repository,impacted_artifact,severity\nrepo-a,path/one.jar,High\n"
+	mux := http.NewServeMux()
+	mux.HandleFunc("/xray/api/v2/watches/w1", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"project_resources":{"resources":[{"type":"repository","name":"repo-a"}]}}`))
+	})
+	mux.HandleFunc("/xray/api/v1/reports/violations", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"report_id": 5}`))
+	})
+	mux.HandleFunc("/xray/api/v1/reports/5", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"completed","name":"x"}`))
+	})
+	mux.HandleFunc("/xray/api/v1/reports/export/5", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(zipCSV(t, "x", csvBody))
+	})
+	mux.HandleFunc("/artifactory/api/storage/repo-a/path/one.jar", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"createdBy":"alice"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	var code int
+	out := captureStdout(t, func() {
+		code = Run([]string{"reports", "segregate-by-deployer", "--watchname", "w1", "--output-dir", outDir, "--url", srv.URL, "--token", "tok"})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d, output=%s", code, out)
+	}
+	if !strings.Contains(out, "alice") {
+		t.Fatalf("expected alice in the output table, got: %s", out)
+	}
 }

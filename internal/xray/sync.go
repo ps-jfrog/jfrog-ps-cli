@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net/url"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // SyncResult is the outcome of copying one policy/watch/ignore-rule from a
@@ -60,7 +62,7 @@ func withoutKey(m map[string]interface{}, key string) map[string]interface{} {
 // When dryRun is true (the default from the CLI), no POST calls are issued
 // against target at all -- the source GET still happens so the caller can
 // report what *would* be copied.
-func SyncPolicies(source, target *jfclient.Client, dryRun bool) ([]SyncResult, error) {
+func SyncPolicies(source, target *jfclient.Client, dryRun bool, onProgress ...progress.Reporter) ([]SyncResult, error) {
 	resp, err := source.Get("/xray/api/v2/policies")
 	if err != nil {
 		return nil, err
@@ -73,14 +75,12 @@ func SyncPolicies(source, target *jfclient.Client, dryRun bool) ([]SyncResult, e
 		return nil, fmt.Errorf("decode policies response: %w", err)
 	}
 
-	results := make([]SyncResult, 0, len(policies))
-	for _, p := range policies {
+	results := concurrency.One(policies, 0, func(p map[string]interface{}) SyncResult {
 		name, _ := p["name"].(string)
 		projectKey, _ := p["project_key"].(string)
 		res := SyncResult{Name: name, ProjectKey: projectKey, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 
 		path := "/xray/api/v2/policies"
@@ -90,8 +90,8 @@ func SyncPolicies(source, target *jfclient.Client, dryRun bool) ([]SyncResult, e
 			body = withoutKey(p, "project_key")
 		}
 		postToTarget(target, path, body, &res)
-		results = append(results, res)
-	}
+		return res
+	}, onProgress...)
 	return results, nil
 }
 
@@ -103,7 +103,7 @@ func SyncPolicies(source, target *jfclient.Client, dryRun bool) ([]SyncResult, e
 // that nested field is stripped and the target POST is made with
 // ?projectKey=<value>; global watches (no general_data.project_key) are
 // posted as-is.
-func SyncWatches(source, target *jfclient.Client, dryRun bool) ([]SyncResult, error) {
+func SyncWatches(source, target *jfclient.Client, dryRun bool, onProgress ...progress.Reporter) ([]SyncResult, error) {
 	resp, err := source.Get("/xray/api/v2/watches")
 	if err != nil {
 		return nil, err
@@ -116,8 +116,7 @@ func SyncWatches(source, target *jfclient.Client, dryRun bool) ([]SyncResult, er
 		return nil, fmt.Errorf("decode watches response: %w", err)
 	}
 
-	results := make([]SyncResult, 0, len(watches))
-	for _, w := range watches {
+	results := concurrency.One(watches, 0, func(w map[string]interface{}) SyncResult {
 		name, _ := w["name"].(string)
 		var projectKey string
 		if gd, ok := w["general_data"].(map[string]interface{}); ok {
@@ -125,8 +124,7 @@ func SyncWatches(source, target *jfclient.Client, dryRun bool) ([]SyncResult, er
 		}
 		res := SyncResult{Name: name, ProjectKey: projectKey, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 
 		path := "/xray/api/v2/watches"
@@ -139,8 +137,8 @@ func SyncWatches(source, target *jfclient.Client, dryRun bool) ([]SyncResult, er
 			body = newBody
 		}
 		postToTarget(target, path, body, &res)
-		results = append(results, res)
-	}
+		return res
+	}, onProgress...)
 	return results, nil
 }
 
@@ -156,7 +154,7 @@ func SyncWatches(source, target *jfclient.Client, dryRun bool) ([]SyncResult, er
 // The target client passed in is always used for every POST, whether the
 // entity is global or project-scoped -- unlike the original bash script,
 // there is no hardcoded server ID/alias anywhere in this path.
-func SyncIgnoreRules(source, target *jfclient.Client, dryRun bool) ([]SyncResult, error) {
+func SyncIgnoreRules(source, target *jfclient.Client, dryRun bool, onProgress ...progress.Reporter) ([]SyncResult, error) {
 	resp, err := source.Get("/xray/api/v1/ignore_rules")
 	if err != nil {
 		return nil, err
@@ -169,8 +167,7 @@ func SyncIgnoreRules(source, target *jfclient.Client, dryRun bool) ([]SyncResult
 		return nil, fmt.Errorf("decode ignore rules response: %w", err)
 	}
 
-	results := make([]SyncResult, 0, len(rules))
-	for _, r := range rules {
+	results := concurrency.One(rules, 0, func(r map[string]interface{}) SyncResult {
 		name, _ := r["name"].(string)
 		if name == "" {
 			// Ignore rules may be identified by "id" rather than "name" --
@@ -182,8 +179,7 @@ func SyncIgnoreRules(source, target *jfclient.Client, dryRun bool) ([]SyncResult
 		projectKey, _ := r["project_key"].(string)
 		res := SyncResult{Name: name, ProjectKey: projectKey, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 
 		path := "/xray/api/v1/ignore_rules"
@@ -193,7 +189,7 @@ func SyncIgnoreRules(source, target *jfclient.Client, dryRun bool) ([]SyncResult
 			body = withoutKey(r, "project_key")
 		}
 		postToTarget(target, path, body, &res)
-		results = append(results, res)
-	}
+		return res
+	}, onProgress...)
 	return results, nil
 }

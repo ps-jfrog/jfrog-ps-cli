@@ -5,7 +5,9 @@ import (
 	"reflect"
 	"sort"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ConfigDiffResult summarizes, among repos present on both source and
@@ -107,15 +109,13 @@ type UpdateResult struct {
 //
 // If dryRun is true, ApplyConfigSync performs no HTTP calls whatsoever and
 // returns nil immediately.
-func ApplyConfigSync(source, target *jfclient.Client, differing []string, dryRun bool) []UpdateResult {
+func ApplyConfigSync(source, target *jfclient.Client, differing []string, dryRun bool, onProgress ...progress.Reporter) []UpdateResult {
 	if dryRun {
 		return nil
 	}
-	results := make([]UpdateResult, 0, len(differing))
-	for _, key := range differing {
-		results = append(results, UpdateResult{Key: key, Err: pushConfig(source, target, key)})
-	}
-	return results
+	return concurrency.One(differing, 0, func(key string) UpdateResult {
+		return UpdateResult{Key: key, Err: pushConfig(source, target, key)}
+	}, onProgress...)
 }
 
 func pushConfig(source, target *jfclient.Client, key string) error {

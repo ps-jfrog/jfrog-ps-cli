@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ResolveCacheRepo maps a remote repository key to its cache repository key,
@@ -145,36 +147,54 @@ func XrayArtifactSummary(client *jfclient.Client, paths []string) (indexed map[s
 	return indexed, nil
 }
 
+// xrayBatch is one batchSize-sized slice of candidates, for
+// ClassifyByXrayIndex to hand out to concurrent workers while keeping each
+// batch's original position for error messages.
+type xrayBatch struct {
+	items      []ArtifactMatch
+	start, end int
+}
+
 // ClassifyByXrayIndex splits candidates into those still Xray-indexed
 // (skip -- leave alone) and those not indexed / retention-expired (safe to
-// clean up), by calling XrayArtifactSummary in batches of batchSize.
-func ClassifyByXrayIndex(client *jfclient.Client, candidates []ArtifactMatch, batchSize int) (expired []ArtifactMatch, err error) {
+// clean up), by calling XrayArtifactSummary in batches of batchSize, with
+// up to concurrency.DefaultParallelism batches in flight at once (each
+// batch is an independent, read-only Xray query). Batches always run to
+// completion, but if any batch's request failed, the whole result is
+// discarded and that error returned -- matching the sequential version's
+// abort-on-first-failure behavior, just detected after every batch that
+// was already in flight finishes rather than before starting the next one.
+func ClassifyByXrayIndex(client *jfclient.Client, candidates []ArtifactMatch, batchSize int, onProgress ...progress.Reporter) ([]ArtifactMatch, error) {
 	if batchSize <= 0 {
 		batchSize = 50
 	}
+	var batches []xrayBatch
 	for start := 0; start < len(candidates); start += batchSize {
 		end := start + batchSize
 		if end > len(candidates) {
 			end = len(candidates)
 		}
-		batch := candidates[start:end]
+		batches = append(batches, xrayBatch{items: candidates[start:end], start: start, end: end})
+	}
 
-		paths := make([]string, len(batch))
-		for i, m := range batch {
+	return concurrency.MapSliceOrErr(batches, 0, func(b xrayBatch) ([]ArtifactMatch, error) {
+		paths := make([]string, len(b.items))
+		for i, m := range b.items {
 			paths[i] = ArtifactPath(m)
 		}
 
 		indexed, err := XrayArtifactSummary(client, paths)
 		if err != nil {
-			return nil, fmt.Errorf("classify batch %d-%d: %w", start, end, err)
+			return nil, fmt.Errorf("classify batch %d-%d: %w", b.start, b.end, err)
 		}
-		for _, m := range batch {
+		var expired []ArtifactMatch
+		for _, m := range b.items {
 			if !indexed[ArtifactPath(m)] {
 				expired = append(expired, m)
 			}
 		}
-	}
-	return expired, nil
+		return expired, nil
+	}, onProgress...)
 }
 
 // RemoteCacheDeleteTarget returns the path to delete for candidate m: the
@@ -187,29 +207,47 @@ func RemoteCacheDeleteTarget(m ArtifactMatch, packageType string) string {
 	return ArtifactPath(m)
 }
 
+// remoteCacheTarget is one deduplicated delete target DeleteRemoteCacheCandidates
+// resolved from a candidate match.
+type remoteCacheTarget struct {
+	match  ArtifactMatch
+	target string
+	isDir  bool
+}
+
 // DeleteRemoteCacheCandidates deletes the resolved target for each expired
 // candidate (deduplicating repeated Docker tag directories), via
-// DELETE /artifactory/{target}[/]. When dryRun is true, no HTTP DELETE calls
-// are issued at all.
-func DeleteRemoteCacheCandidates(client *jfclient.Client, candidates []ArtifactMatch, packageType string, dryRun bool) []DeleteResult {
-	seen := make(map[string]bool)
-	results := make([]DeleteResult, 0, len(candidates))
+// DELETE /artifactory/{target}[/], with up to
+// concurrency.DefaultParallelism deletes in flight at once. When dryRun is
+// true, no HTTP DELETE calls are issued at all.
+//
+// Deduplication happens in a first, sequential pass (it's cheap, in-memory
+// map lookups, no I/O) so the concurrent delete pass below never touches
+// the dedup map -- only independent, already-unique targets run in
+// parallel.
+func DeleteRemoteCacheCandidates(client *jfclient.Client, candidates []ArtifactMatch, packageType string, dryRun bool, onProgress ...progress.Reporter) []DeleteResult {
+	seen := make(map[string]bool, len(candidates))
+	unique := make([]remoteCacheTarget, 0, len(candidates))
+	skipped := 0
 	for _, m := range candidates {
 		target := RemoteCacheDeleteTarget(m, packageType)
 		isDir := target != ArtifactPath(m)
 		if seen[target] {
+			skipped++
+			progress.Report(onProgress, skipped, len(candidates))
 			continue
 		}
 		seen[target] = true
+		unique = append(unique, remoteCacheTarget{match: m, target: target, isDir: isDir})
+	}
 
-		res := DeleteResult{Match: m, Path: target, DryRun: dryRun}
+	return concurrency.One(unique, 0, func(u remoteCacheTarget) DeleteResult {
+		res := DeleteResult{Match: u.match, Path: u.target, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
-
-		reqPath := "/artifactory/" + target
-		if isDir {
+		reqPath := "/artifactory/" + u.target
+		if u.isDir {
 			reqPath += "/"
 		}
 		resp, err := client.Delete(reqPath)
@@ -221,7 +259,6 @@ func DeleteRemoteCacheCandidates(client *jfclient.Client, candidates []ArtifactM
 		default:
 			res.Success = true
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, func(done, _ int) { progress.Report(onProgress, skipped+done, len(candidates)) })
 }

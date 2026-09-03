@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // DeleteKind identifies which kind of Access API v2 object delete-users,
@@ -87,23 +89,18 @@ type DeleteResult struct {
 // DeleteItems issues DELETE /access/api/v2/{kind}/{name} for each name. When
 // dryRun is true, no HTTP call is made at all -- every name is reported as a
 // would-be success so callers can preview the plan.
-func DeleteItems(c *jfclient.Client, kind DeleteKind, names []string, dryRun bool) []DeleteResult {
-	results := make([]DeleteResult, 0, len(names))
-	for _, n := range names {
+func DeleteItems(c *jfclient.Client, kind DeleteKind, names []string, dryRun bool, onProgress ...progress.Reporter) []DeleteResult {
+	return concurrency.One(names, 0, func(n string) DeleteResult {
 		if dryRun {
-			results = append(results, DeleteResult{Name: n, Success: true})
-			continue
+			return DeleteResult{Name: n, Success: true}
 		}
 		resp, err := c.Delete(endpointFor(kind, n))
 		if err != nil {
-			results = append(results, DeleteResult{Name: n, Success: false, Error: err.Error()})
-			continue
+			return DeleteResult{Name: n, Success: false, Error: err.Error()}
 		}
 		if err := resp.Error(fmt.Sprintf("delete %s %s", strings.TrimSuffix(string(kind), "s"), n)); err != nil {
-			results = append(results, DeleteResult{Name: n, Success: false, Error: err.Error()})
-			continue
+			return DeleteResult{Name: n, Success: false, Error: err.Error()}
 		}
-		results = append(results, DeleteResult{Name: n, Success: true})
-	}
-	return results
+		return DeleteResult{Name: n, Success: true}
+	}, onProgress...)
 }

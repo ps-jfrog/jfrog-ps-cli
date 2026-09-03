@@ -657,3 +657,105 @@ func TestDiffDeleteArtifactsYesFlagDeletesForReal(t *testing.T) {
 		t.Fatalf("expected DELETE to be called against target with --yes")
 	}
 }
+
+// --- empty-folders ---------------------------------------------------------
+
+// emptyFoldersServer serves a fixed fake tree for repo "my-repo": root has
+// an empty "emptydir" folder and a "keep" folder containing a file, so the
+// only empty-folder candidate is "emptydir".
+func emptyFoldersServer(t *testing.T, deleteCalled *bool, deletedPaths *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/artifactory/api/storage/my-repo":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"children":[{"uri":"/emptydir","folder":true},{"uri":"/keep","folder":true}]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/artifactory/api/storage/my-repo/emptydir":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"children":[]}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/artifactory/api/storage/my-repo/keep":
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"children":[{"uri":"/file.txt","folder":false}]}`))
+		case r.Method == http.MethodDelete:
+			*deleteCalled = true
+			*deletedPaths = append(*deletedPaths, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+func TestEmptyFoldersRequiresRepo(t *testing.T) {
+	if code := Run([]string{"empty-folders", "--url", "http://example.invalid", "--token", "t"}); code != 1 {
+		t.Fatalf("expected exit 1 without --repo, got %d", code)
+	}
+}
+
+func TestEmptyFoldersDryRunDefaultNeverDeletes(t *testing.T) {
+	deleteCalled := false
+	var deletedPaths []string
+	srv := emptyFoldersServer(t, &deleteCalled, &deletedPaths)
+	defer srv.Close()
+
+	var code int
+	out := captureStdout(t, func() {
+		code = Run([]string{"empty-folders", "--url", srv.URL, "--token", "tok", "--repo", "my-repo"})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d; output=%s", code, out)
+	}
+	if !strings.Contains(out, "[DRY RUN]") {
+		t.Fatalf("expected dry-run banner, got %q", out)
+	}
+	if !strings.Contains(out, "emptydir") {
+		t.Fatalf("expected emptydir to be listed as a candidate, got %q", out)
+	}
+	if deleteCalled {
+		t.Fatalf("expected DELETE to never be called when dry-run is true (default)")
+	}
+}
+
+func TestEmptyFoldersYesFlagDeletesForReal(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
+	deleteCalled := false
+	var deletedPaths []string
+	srv := emptyFoldersServer(t, &deleteCalled, &deletedPaths)
+	defer srv.Close()
+
+	var code int
+	out := captureStdout(t, func() {
+		code = Run([]string{"empty-folders", "--url", srv.URL, "--token", "tok", "--repo", "my-repo", "--dry-run=false", "--yes"})
+	})
+	if code != 0 {
+		t.Fatalf("expected exit 0, got %d; output=%s", code, out)
+	}
+	if !deleteCalled {
+		t.Fatalf("expected DELETE to be called with --yes")
+	}
+	if len(deletedPaths) != 1 || deletedPaths[0] != "/artifactory/my-repo/emptydir" {
+		t.Fatalf("expected exactly one delete of /artifactory/my-repo/emptydir, got %v", deletedPaths)
+	}
+}
+
+func TestEmptyFoldersConfirmDeclinedAbortsWithoutDelete(t *testing.T) {
+	deleteCalled := false
+	var deletedPaths []string
+	srv := emptyFoldersServer(t, &deleteCalled, &deletedPaths)
+	defer srv.Close()
+
+	var code int
+	withStdin(t, "n\n", func() {
+		captureStdout(t, func() {
+			code = Run([]string{"empty-folders", "--url", srv.URL, "--token", "tok", "--repo", "my-repo", "--dry-run=false"})
+		})
+	})
+	if code != 1 {
+		t.Fatalf("expected exit 1 when confirmation declined, got %d", code)
+	}
+	if deleteCalled {
+		t.Fatalf("expected DELETE to never be called when confirmation is declined")
+	}
+}

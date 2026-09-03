@@ -29,6 +29,7 @@ import (
 	"jfrogpscli/internal/discover"
 	"jfrogpscli/internal/instance"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 )
 
@@ -140,7 +141,7 @@ func Run(args []string) int {
 	// own labeled line, stacked and redrawn together, so running several
 	// pieces concurrently doesn't garble the terminal the way independent
 	// \r-based bars would.
-	mb := newMultiBar()
+	mb := progress.New()
 	errs := &runErrors{}
 
 	runRepos := func() int {
@@ -299,7 +300,7 @@ func splitList(s string) []string {
 // repos
 // ---------------------------------------------------------------------------
 
-func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, mb *multiBar, errs *runErrors) int {
+func doReposReport(client *jfclient.Client, csvPath string, concurrency int, withPolicies bool, include, exclude []string, mb *progress.Bars, errs *runErrors) int {
 	opts := discover.ReportOptions{
 		Concurrency:  concurrency,
 		WithPolicies: withPolicies,
@@ -343,7 +344,7 @@ func doReposReport(client *jfclient.Client, csvPath string, concurrency int, wit
 // policies
 // ---------------------------------------------------------------------------
 
-func doPoliciesReport(client *jfclient.Client, csvPath string, mb *multiBar, errs *runErrors) int {
+func doPoliciesReport(client *jfclient.Client, csvPath string, mb *progress.Bars, errs *runErrors) int {
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
 		mb.Log("error:", err)
@@ -382,7 +383,7 @@ func doPoliciesReport(client *jfclient.Client, csvPath string, mb *multiBar, err
 // instance
 // ---------------------------------------------------------------------------
 
-func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool, mb *multiBar, errs *runErrors) int {
+func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool, mb *progress.Bars, errs *runErrors) int {
 	mb.Log("discover --instance: fetching repo list (for project repo-counts and federation targets)...")
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {

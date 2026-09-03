@@ -14,6 +14,7 @@ import (
 	"jfrogpscli/internal/compare"
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 )
 
@@ -120,7 +121,8 @@ func runRepos(args []string) int {
 		repos = []string{*repo}
 	}
 
-	results, err := compare.CompareRepos(sourceClient, targetClient, repos)
+	bar := progress.New()
+	results, err := compare.CompareRepos(sourceClient, targetClient, repos, func(done, total int) { bar.Update("Comparing repos", done, total) })
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "jfps compare repos: %v\n", err)
 		return 1
@@ -224,7 +226,8 @@ func runBuilds(args []string) int {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("migrate %d build(s)", len(pairs)))
 	}
 
-	results := compare.MigrateBuildPairs(sourceClient, targetClient, pairs, *dryRun)
+	bar := progress.New()
+	results := compare.MigrateBuildPairs(sourceClient, targetClient, pairs, *dryRun, func(done, total int) { bar.Update("Migrating builds", done, total) })
 	rows := make([][]string, 0, len(results))
 	failed := false
 	for _, r := range results {

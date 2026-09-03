@@ -6,7 +6,9 @@ import (
 	"os"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ReadKeysFromFile reads newline-delimited project keys from path, skipping
@@ -42,10 +44,8 @@ func ReadKeysFromFile(path string) ([]string, error) {
 // then just do it" behavior). Callers (the CLI layer) are responsible for
 // obtaining explicit confirmation -- via output.Confirm or --yes -- before
 // ever calling this function.
-func DeleteProjects(c *jfclient.Client, keys []string) []DeleteResult {
-	results := make([]DeleteResult, 0, len(keys))
-	for _, key := range keys {
-		results = append(results, deleteProject(c, key))
-	}
-	return results
+func DeleteProjects(c *jfclient.Client, keys []string, onProgress ...progress.Reporter) []DeleteResult {
+	return concurrency.One(keys, 0, func(key string) DeleteResult {
+		return deleteProject(c, key)
+	}, onProgress...)
 }

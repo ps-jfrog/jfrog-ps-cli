@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"jfrogpscli/internal/testutil"
 )
 
 func TestRun_NoFlags(t *testing.T) {
@@ -277,7 +279,7 @@ func TestRun_InstanceContinuesWhenRepoListFails(t *testing.T) {
 	instancePath := filepath.Join(dir, "instance.json")
 
 	var code int
-	out := captureStderr(t, func() {
+	out := testutil.CaptureStderr(t, func() {
 		code = Run([]string{"--instance", "--url", srv.URL, "--token", "tok", "--instance-json", instancePath})
 	})
 	if code != 0 {
@@ -298,7 +300,7 @@ func TestRun_ReposAndPoliciesReportErrorsInsteadOfAborting(t *testing.T) {
 	policiesPath := filepath.Join(dir, "policies.csv")
 
 	var code int
-	out := captureStderr(t, func() {
+	out := testutil.CaptureStderr(t, func() {
 		code = Run([]string{
 			"--repos", "--policies", "--url", srv.URL, "--token", "tok",
 			"--repos-csv", reposPath, "--policies-csv", policiesPath,

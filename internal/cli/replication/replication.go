@@ -11,6 +11,7 @@ import (
 
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 	"jfrogpscli/internal/replication"
 )
@@ -118,7 +119,8 @@ func runList(args []string) int {
 		return 1
 	}
 
-	statuses, err := replication.List(client, *repo)
+	bar := progress.New()
+	statuses, err := replication.List(client, *repo, func(done, total int) { bar.Update("Checking replication", done, total) })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "replication list:", err)
 		return 1
@@ -202,7 +204,8 @@ func runCreate(args []string) int {
 		Enabled:     *enabled,
 	}
 
-	results := replication.Create(client, repos, opts, *dryRun)
+	bar := progress.New()
+	results := replication.Create(client, repos, opts, *dryRun, func(done, total int) { bar.Update("Creating replication", done, total) })
 
 	failed := 0
 	for _, r := range results {
@@ -279,7 +282,8 @@ func runDelete(args []string) int {
 		}
 	}
 
-	results := replication.Delete(client, targets, false)
+	bar := progress.New()
+	results := replication.Delete(client, targets, false, func(done, total int) { bar.Update("Deleting replication", done, total) })
 	failed := 0
 	for _, r := range results {
 		if r.Success {
@@ -342,7 +346,8 @@ func runDisable(args []string) int {
 		return 0
 	}
 
-	results := replication.Disable(client, targets, false)
+	bar := progress.New()
+	results := replication.Disable(client, targets, false, func(done, total int) { bar.Update("Disabling replication", done, total) })
 	failed := 0
 	for _, r := range results {
 		if r.Success {
@@ -399,7 +404,8 @@ func runBackup(args []string) int {
 		return 0
 	}
 
-	data, err := replication.Backup(client, targets)
+	bar := progress.New()
+	data, err := replication.Backup(client, targets, func(done, total int) { bar.Update("Backing up replication", done, total) })
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "replication backup:", err)
 		return 1
@@ -443,7 +449,8 @@ func runRestore(args []string) int {
 		return 0
 	}
 
-	results := replication.Restore(client, data, *dryRun)
+	bar := progress.New()
+	results := replication.Restore(client, data, *dryRun, func(done, total int) { bar.Update("Restoring replication", done, total) })
 
 	if *dryRun {
 		names := make([]string, 0, len(results))

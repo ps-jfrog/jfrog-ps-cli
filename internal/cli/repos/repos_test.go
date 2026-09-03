@@ -45,3 +45,15 @@ func TestRun_DeleteMissingFile(t *testing.T) {
 		t.Fatalf("expected exit code 1 when --file is missing, got %d", code)
 	}
 }
+
+func TestRun_CheckExistsMissingFile(t *testing.T) {
+	if code := Run([]string{"check-exists"}); code != 1 {
+		t.Fatalf("expected exit code 1 when --file is missing, got %d", code)
+	}
+}
+
+func TestRun_CreateVirtualMissingFile(t *testing.T) {
+	if code := Run([]string{"create-virtual"}); code != 1 {
+		t.Fatalf("expected exit code 1 when --file is missing, got %d", code)
+	}
+}

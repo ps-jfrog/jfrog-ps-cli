@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"net/url"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // indexedReposResponse models the response of
@@ -120,19 +122,16 @@ type ToggleResult struct {
 // ToggleIndexing enables or disables Xray indexing on each repo via
 // POST /artifactory/api/repositories/{repo} with body {"xrayIndex": enable}.
 // When dryRun is true, no HTTP POST calls are issued at all.
-func ToggleIndexing(client *jfclient.Client, repos []string, enable bool, dryRun bool) []ToggleResult {
-	results := make([]ToggleResult, 0, len(repos))
-	for _, repo := range repos {
+func ToggleIndexing(client *jfclient.Client, repos []string, enable bool, dryRun bool, onProgress ...progress.Reporter) []ToggleResult {
+	return concurrency.One(repos, 0, func(repo string) ToggleResult {
 		res := ToggleResult{Repo: repo, Enable: enable, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 		resp, err := client.Post("/artifactory/api/repositories/"+repo, map[string]bool{"xrayIndex": enable})
 		if err != nil {
 			res.Error = err.Error()
-			results = append(results, res)
-			continue
+			return res
 		}
 		res.StatusCode = resp.StatusCode
 		if resp.OK() {
@@ -140,9 +139,8 @@ func ToggleIndexing(client *jfclient.Client, repos []string, enable bool, dryRun
 		} else {
 			res.Error = resp.Error("toggle indexing").Error()
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, onProgress...)
 }
 
 // Reindex modes.

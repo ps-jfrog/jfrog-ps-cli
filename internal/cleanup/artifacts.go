@@ -11,7 +11,9 @@ import (
 	"strconv"
 	"strings"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ArtifactMatch is one item found by an AQL query against Artifactory, e.g.
@@ -73,18 +75,20 @@ type DeleteResult struct {
 	Error   string
 }
 
-// DeleteArtifacts deletes each match via DELETE /artifactory/{repo/path/name}.
-// When dryRun is true, no HTTP DELETE calls are issued at all -- every result
-// is returned with DryRun=true and Success=false, purely describing what
-// would have been deleted.
-func DeleteArtifacts(client *jfclient.Client, matches []ArtifactMatch, dryRun bool) []DeleteResult {
-	results := make([]DeleteResult, 0, len(matches))
-	for _, m := range matches {
+// DeleteArtifacts deletes each match via DELETE /artifactory/{repo/path/name},
+// with up to concurrency.DefaultParallelism deletes in flight at once (each
+// match is an independent path, so there's no ordering to preserve between
+// them). When dryRun is true, no HTTP DELETE calls are issued at all --
+// every result is returned with DryRun=true and Success=false, purely
+// describing what would have been deleted. onProgress, if given, is called
+// after each match is processed (dry-run or not) with the running/total
+// count.
+func DeleteArtifacts(client *jfclient.Client, matches []ArtifactMatch, dryRun bool, onProgress ...progress.Reporter) []DeleteResult {
+	return concurrency.One(matches, 0, func(m ArtifactMatch) DeleteResult {
 		p := ArtifactPath(m)
 		res := DeleteResult{Match: m, Path: p, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 		resp, err := client.Delete("/artifactory/" + p)
 		switch {
@@ -95,9 +99,8 @@ func DeleteArtifacts(client *jfclient.Client, matches []ArtifactMatch, dryRun bo
 		default:
 			res.Success = true
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, onProgress...)
 }
 
 // WriteArtifactsCSV writes matches to path as CSV with a header row.

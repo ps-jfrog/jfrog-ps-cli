@@ -1,7 +1,9 @@
 package federation
 
 import (
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // ResyncResult is the outcome of attempting to resync federation config for
@@ -16,24 +18,19 @@ type ResyncResult struct {
 // POST /artifactory/api/federation/configSync/{repo}. Note this only
 // resyncs configuration (member list, ACLs, etc.), not artifact data. In
 // dry-run mode no POST calls are made.
-func Resync(c *jfclient.Client, repos []string, dryRun bool) []ResyncResult {
-	results := make([]ResyncResult, 0, len(repos))
-	for _, repo := range repos {
+func Resync(c *jfclient.Client, repos []string, dryRun bool, onProgress ...progress.Reporter) []ResyncResult {
+	return concurrency.One(repos, 0, func(repo string) ResyncResult {
 		if dryRun {
-			results = append(results, ResyncResult{Repo: repo, Success: true})
-			continue
+			return ResyncResult{Repo: repo, Success: true}
 		}
 
 		resp, err := c.Post("/artifactory/api/federation/configSync/"+repo, nil)
 		if err != nil {
-			results = append(results, ResyncResult{Repo: repo, Err: err})
-			continue
+			return ResyncResult{Repo: repo, Err: err}
 		}
 		if err := resp.Error("resync " + repo); err != nil {
-			results = append(results, ResyncResult{Repo: repo, Err: err})
-			continue
+			return ResyncResult{Repo: repo, Err: err}
 		}
-		results = append(results, ResyncResult{Repo: repo, Success: true})
-	}
-	return results
+		return ResyncResult{Repo: repo, Success: true}
+	}, onProgress...)
 }

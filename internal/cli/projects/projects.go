@@ -9,6 +9,7 @@ import (
 
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/projects"
 	"jfrogpscli/internal/registry"
 )
@@ -135,7 +136,8 @@ func runDiff(args []string) int {
 		if *dryRun {
 			output.DryRunBanner(os.Stdout, fmt.Sprintf("create %d projects on target", len(result.MissingOnTarget)))
 		} else {
-			createResults := projects.CreateMissing(source, target, result.MissingOnTarget, *dryRun)
+			bar := progress.New()
+			createResults := projects.CreateMissing(source, target, result.MissingOnTarget, *dryRun, func(done, total int) { bar.Update("Creating projects", done, total) })
 			for _, r := range createResults {
 				if r.Err != nil {
 					fmt.Fprintf(os.Stderr, "failed to create %s on target: %v\n", r.Key, r.Err)
@@ -159,7 +161,8 @@ func runDiff(args []string) int {
 			if !*yes && !output.Confirm(fmt.Sprintf("Delete %d extra projects from target?", len(result.ExtraOnTarget))) {
 				fmt.Println("Aborted deletion of extra projects.")
 			} else {
-				deleteResults := projects.DeleteExtra(target, result.ExtraOnTarget, *dryRun)
+				bar := progress.New()
+				deleteResults := projects.DeleteExtra(target, result.ExtraOnTarget, *dryRun, func(done, total int) { bar.Update("Deleting projects", done, total) })
 				for _, r := range deleteResults {
 					if r.Err != nil {
 						fmt.Fprintf(os.Stderr, "failed to delete %s from target: %v\n", r.Key, r.Err)
@@ -221,7 +224,8 @@ func runDelete(args []string) int {
 		return 1
 	}
 
-	results := projects.DeleteProjects(client, keys)
+	bar := progress.New()
+	results := projects.DeleteProjects(client, keys, func(done, total int) { bar.Update("Deleting projects", done, total) })
 	var failures []string
 	for _, r := range results {
 		if r.Err != nil {

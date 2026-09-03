@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"time"
 
+	"jfrogpscli/internal/concurrency"
 	"jfrogpscli/internal/jfclient"
+	"jfrogpscli/internal/progress"
 )
 
 // Report is one entry returned by POST /xray/api/v1/reports. Only the fields
@@ -99,19 +101,16 @@ type ReportDeleteResult struct {
 
 // DeleteReports deletes each report via DELETE /xray/api/v1/reports/{id}.
 // When dryRun is true, no HTTP DELETE calls are issued at all.
-func DeleteReports(client *jfclient.Client, reports []Report, dryRun bool) []ReportDeleteResult {
-	results := make([]ReportDeleteResult, 0, len(reports))
-	for _, r := range reports {
+func DeleteReports(client *jfclient.Client, reports []Report, dryRun bool, onProgress ...progress.Reporter) []ReportDeleteResult {
+	return concurrency.One(reports, 0, func(r Report) ReportDeleteResult {
 		res := ReportDeleteResult{ID: r.ID, Name: r.Name, EndTime: r.EndTime, DryRun: dryRun}
 		if dryRun {
-			results = append(results, res)
-			continue
+			return res
 		}
 		resp, err := client.Delete(fmt.Sprintf("/xray/api/v1/reports/%d", r.ID))
 		if err != nil {
 			res.Error = err.Error()
-			results = append(results, res)
-			continue
+			return res
 		}
 		res.StatusCode = resp.StatusCode
 		if resp.OK() {
@@ -119,7 +118,6 @@ func DeleteReports(client *jfclient.Client, reports []Report, dryRun bool) []Rep
 		} else {
 			res.Error = resp.Error("delete report").Error()
 		}
-		results = append(results, res)
-	}
-	return results
+		return res
+	}, onProgress...)
 }

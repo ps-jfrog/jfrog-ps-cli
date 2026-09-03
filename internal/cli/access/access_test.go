@@ -129,3 +129,60 @@ func TestSplitCSVAndSemi(t *testing.T) {
 		t.Fatalf("unexpected splitSemi result: %+v", got)
 	}
 }
+
+func TestRun_EffectivePermissions_MissingRepos(t *testing.T) {
+	if code := Run([]string{"effective-permissions", "--url", "https://example.test", "--token", "t"}); code != 1 {
+		t.Fatalf("expected exit code 1 when --repos is missing, got %d", code)
+	}
+}
+
+func TestRun_EffectivePermissions_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/artifactory/api/artifactpermissions" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"userEffectivePermissions":[{"principal":"alice","admin":false,"permission":{"read":true},"permissionTargets":["p1"]}],"groupEffectivePermissions":[]}`))
+	}))
+	defer srv.Close()
+
+	code := Run([]string{"effective-permissions", "--repos", "repo1", "--url", srv.URL, "--token", "tkn"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+}
+
+func TestRun_Restore_MissingInput(t *testing.T) {
+	if code := Run([]string{"restore", "--url", "https://example.test", "--token", "t"}); code != 1 {
+		t.Fatalf("expected exit code 1 when --input is missing, got %d", code)
+	}
+}
+
+func TestRun_Restore_DryRunDoesNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "users.json"), []byte(`[{"username":"alice"}]`), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("dry-run must never issue a write, got %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	code := Run([]string{"restore", "--input", dir, "--url", srv.URL, "--token", "tkn"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+}
+
+func TestRun_Restore_NothingToRestore(t *testing.T) {
+	dir := t.TempDir() // no backup files at all
+
+	code := Run([]string{"restore", "--input", dir, "--url", "https://example.test", "--token", "t", "--dry-run=false", "--yes"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0 when there is nothing to restore, got %d", code)
+	}
+}

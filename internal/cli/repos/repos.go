@@ -9,6 +9,7 @@ import (
 
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/output"
+	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
 	"jfrogpscli/internal/repos"
 )
@@ -35,6 +36,10 @@ func Run(args []string) int {
 		return runSyncConfig(args[1:])
 	case "delete":
 		return runDelete(args[1:])
+	case "check-exists":
+		return runCheckExists(args[1:])
+	case "create-virtual":
+		return runCreateVirtual(args[1:])
 	default:
 		fmt.Fprintf(os.Stderr, "jfps repos: unknown subcommand %q\n\n", args[0])
 		printUsage()
@@ -50,6 +55,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  diff         Diff repositories between source and target, optionally create missing ones on target")
 	fmt.Fprintln(os.Stderr, "  sync-config  Compare and optionally sync full repository configuration for repos present on both servers")
 	fmt.Fprintln(os.Stderr, "  delete       Delete repositories listed in a file")
+	fmt.Fprintln(os.Stderr, "  check-exists Check whether repositories listed in a file exist on a server")
+	fmt.Fprintln(os.Stderr, "  create-virtual  Create/update two-member (local+remote) virtual repos from a CSV file")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps repos <subcommand> -h' for subcommand-specific flags.")
 }
@@ -142,7 +149,8 @@ func runDiff(args []string) int {
 		return 0
 	}
 
-	createResults := repos.CopyMissing(source, target, result.MissingOnTarget, *dryRun)
+	bar := progress.New()
+	createResults := repos.CopyMissing(source, target, result.MissingOnTarget, *dryRun, func(done, total int) { bar.Update("Creating repos", done, total) })
 	failed := 0
 	for _, r := range createResults {
 		if r.Err != nil {
@@ -206,7 +214,8 @@ func runSyncConfig(args []string) int {
 		return 0
 	}
 
-	updateResults := repos.ApplyConfigSync(source, target, result.Differing, *dryRun)
+	bar := progress.New()
+	updateResults := repos.ApplyConfigSync(source, target, result.Differing, *dryRun, func(done, total int) { bar.Update("Syncing repos", done, total) })
 	failed := 0
 	for _, r := range updateResults {
 		if r.Err != nil {
@@ -268,7 +277,8 @@ func runDelete(args []string) int {
 		return 1
 	}
 
-	results := repos.DeleteRepos(client, keys, *dryRun)
+	bar := progress.New()
+	results := repos.DeleteRepos(client, keys, *dryRun, func(done, total int) { bar.Update("Deleting repos", done, total) })
 	failed := 0
 	for _, r := range results {
 		if r.Err != nil {
@@ -279,6 +289,143 @@ func runDelete(args []string) int {
 		fmt.Printf("deleted %s (HTTP %d)\n", r.Key, r.StatusCode)
 	}
 	if failed > 0 {
+		return 1
+	}
+	return 0
+}
+
+func runCheckExists(args []string) int {
+	fs := flag.NewFlagSet("repos check-exists", flag.ContinueOnError)
+	serverFlags := config.Register(fs, "")
+	file := fs.String("file", "", "Path to a file with repo keys to check, one per line (required)")
+	repoType := fs.String("type", "all", "Repository type to check against: local, remote, virtual, federated, or all")
+	ok, code := parseOrHelp(fs, args)
+	if !ok {
+		return code
+	}
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "error: --file is required")
+		return 1
+	}
+
+	keys, err := repos.ReadKeysFromFile(*file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if len(keys) == 0 {
+		fmt.Println("No repository keys found in file; nothing to do.")
+		return 0
+	}
+
+	client, err := serverFlags.Resolve()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	results, err := repos.CheckExist(client, keys, *repoType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	rows := make([][]string, 0, len(results))
+	missing := 0
+	for _, r := range results {
+		status := "EXISTS"
+		if !r.Exists {
+			status = "NOT FOUND"
+			missing++
+		}
+		rows = append(rows, []string{r.Key, status})
+	}
+	output.Table(os.Stdout, []string{"REPOSITORY", "STATUS"}, rows)
+	fmt.Printf("%d exist, %d not found (of %d checked).\n", len(results)-missing, missing, len(results))
+	if missing > 0 {
+		return 1
+	}
+	return 0
+}
+
+func runCreateVirtual(args []string) int {
+	fs := flag.NewFlagSet("repos create-virtual", flag.ContinueOnError)
+	serverFlags := config.Register(fs, "")
+	file := fs.String("file", "", `Path to a CSV file with "new-virtual-repo", "local-name", "remote-name" columns (required)`)
+	dryRun := fs.Bool("dry-run", true, "Preview creates/updates without applying them")
+	yes := fs.Bool("yes", false, "Skip interactive confirmation")
+	ok, code := parseOrHelp(fs, args)
+	if !ok {
+		return code
+	}
+	if *file == "" {
+		fmt.Fprintln(os.Stderr, "error: --file is required")
+		return 1
+	}
+
+	specs, err := repos.ReadVirtualRepoSpecsCSV(*file)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	client, err := serverFlags.Resolve()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	plans, err := repos.PlanVirtualRepos(client, specs)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	rows := make([][]string, 0, len(plans))
+	toApply := 0
+	failedPlans := 0
+	for _, p := range plans {
+		detail := p.Error
+		switch p.Action {
+		case repos.VirtualActionCreate, repos.VirtualActionUpdate:
+			toApply++
+		case repos.VirtualActionError:
+			failedPlans++
+		}
+		rows = append(rows, []string{p.Spec.VirtualRepo, p.Spec.LocalRepo, p.Spec.RemoteRepo, p.PackageType, p.Action, detail})
+	}
+	output.Table(os.Stdout, []string{"VIRTUAL_REPO", "LOCAL_REPO", "REMOTE_REPO", "PACKAGE_TYPE", "ACTION", "DETAIL"}, rows)
+
+	if toApply == 0 {
+		fmt.Println("Nothing to create or update.")
+		if failedPlans > 0 {
+			return 1
+		}
+		return 0
+	}
+
+	if *dryRun {
+		output.DryRunBanner(os.Stdout, fmt.Sprintf("create/update %d virtual repo(s)", toApply))
+		return 0
+	}
+
+	if !*yes && !output.Confirm(fmt.Sprintf("Create/update %d virtual repositor(y/ies)?", toApply)) {
+		fmt.Println("Aborted.")
+		return 1
+	}
+
+	bar := progress.New()
+	results := repos.ApplyVirtualRepos(client, plans, *dryRun, func(done, total int) { bar.Update("Applying repos", done, total) })
+	failed := 0
+	for _, r := range results {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "failed to %s %s: %v\n", r.Action, r.Spec.VirtualRepo, r.Err)
+			failed++
+			continue
+		}
+		fmt.Printf("%sd %s\n", r.Action, r.Spec.VirtualRepo)
+	}
+	if failed > 0 || failedPlans > 0 {
 		return 1
 	}
 	return 0
