@@ -5,9 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestCreatePermission(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var captured V2Permission
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/access/api/v2/permissions" {
@@ -56,6 +61,9 @@ func TestGetPermissionV2_NotFound(t *testing.T) {
 }
 
 func TestGrantPath_CreatesWhenMissing(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var posted V2Permission
 	patchCalled := false
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
@@ -110,6 +118,9 @@ func TestGrantPath_CreatesWhenMissing(t *testing.T) {
 }
 
 func TestGrantPath_MergesWhenExists(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	existing := V2Permission{
 		Name: "existing-perm",
 		Resources: map[string]V2Resource{
@@ -196,6 +207,9 @@ func TestGrantPath_DryRunNoMutatingCalls(t *testing.T) {
 }
 
 func TestAddRepos(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	existing := V2Permission{
 		Name: "p",
 		Resources: map[string]V2Resource{
@@ -253,6 +267,9 @@ func TestAddRepos_DryRunNoMutatingCalls(t *testing.T) {
 }
 
 func TestRemoveRepos_ExactKeyMatch(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	// Regression test for the substring-matching bug in the original bash
 	// script: removing "repo1" must not also remove "repo10".
 	existing := V2Permission{

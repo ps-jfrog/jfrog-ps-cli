@@ -94,6 +94,9 @@ func TestDeleteDockerTagsDryRunNeverCallsDelete(t *testing.T) {
 }
 
 func TestDeleteDockerTagsDeletesTagDirectoryNotJustManifest(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {

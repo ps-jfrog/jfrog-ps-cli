@@ -178,6 +178,9 @@ func TestMigrateBuildPairsDryRunNeverPuts(t *testing.T) {
 }
 
 func TestMigrateBuildPairsRealRunStripsURIAndPuts(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := &buildsMockServer{
 		t: t,
 		buildInfo: map[string]map[string]interface{}{

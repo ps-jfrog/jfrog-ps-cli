@@ -88,6 +88,9 @@ func TestToggleIndexingDryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestToggleIndexingAppliesChanges(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.URL.Path)
@@ -137,6 +140,9 @@ func TestReindexDryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestReindexModeIndex(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/xray/api/v1/index/repository/repo-a" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -159,6 +165,9 @@ func TestReindexModeIndex(t *testing.T) {
 }
 
 func TestReindexModeForce(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/xray/api/v1/forceReindex" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
@@ -189,6 +198,9 @@ func TestReindexModeForce(t *testing.T) {
 }
 
 func TestReindexModeScanNow(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/xray/api/v2/index" {
 			t.Fatalf("unexpected path %q", r.URL.Path)

@@ -228,6 +228,9 @@ func TestDeleteRemoteCacheCandidatesDryRunNeverCallsDelete(t *testing.T) {
 }
 
 func TestDeleteRemoteCacheCandidatesDedupesDockerTagDirectory(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var deleteCount int
 	var gotPaths []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -258,6 +261,9 @@ func TestDeleteRemoteCacheCandidatesDedupesDockerTagDirectory(t *testing.T) {
 }
 
 func TestDeleteRemoteCacheCandidatesGenericArtifact(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path

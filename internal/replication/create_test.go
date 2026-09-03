@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestBuildPayloadDefaultsTargetRepoToSource(t *testing.T) {
@@ -45,6 +47,9 @@ func TestCreateDryRunMakesNoPUT(t *testing.T) {
 }
 
 func TestCreateAppliesPUTWithExpectedPayload(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var gotBody Payload
 	var gotMethod, gotPath string
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {

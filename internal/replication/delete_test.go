@@ -3,6 +3,8 @@ package replication
 import (
 	"net/http"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestDeleteDryRunMakesNoDELETE(t *testing.T) {
@@ -23,6 +25,9 @@ func TestDeleteDryRunMakesNoDELETE(t *testing.T) {
 }
 
 func TestDeleteAppliesDELETE(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var gotMethod, gotPath string
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		gotMethod = r.Method

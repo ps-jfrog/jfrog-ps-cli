@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestIntersectKeys(t *testing.T) {
@@ -107,6 +109,9 @@ func TestApplyConfigSync_DryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestApplyConfigSync_PushesSourceConfig(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(repoConfigHandler(map[string]map[string]interface{}{
 		"a": {"key": "a", "rclass": "local"},
 	}))

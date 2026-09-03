@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestMissingOnTarget(t *testing.T) {
@@ -63,6 +65,9 @@ func TestCopyMissing_DryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestCopyMissing_AppliesAndStripsProjectKey(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	sourceHits := 0
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sourceHits++

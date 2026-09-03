@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestReadKeysFromFile_SkipsBlanksAndComments(t *testing.T) {
@@ -38,6 +40,9 @@ func TestReadKeysFromFile_MissingFile(t *testing.T) {
 }
 
 func TestDeleteProjects_AppliesAndReportsStatus(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			t.Fatalf("expected DELETE, got %s", r.Method)

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestDisableDryRunMakesNoHTTPCalls(t *testing.T) {
@@ -19,6 +21,9 @@ func TestDisableDryRunMakesNoHTTPCalls(t *testing.T) {
 }
 
 func TestDisableSingleObjectShape(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var putBody map[string]interface{}
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -41,6 +46,9 @@ func TestDisableSingleObjectShape(t *testing.T) {
 }
 
 func TestDisableArrayShape(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var putBody []map[string]interface{}
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {

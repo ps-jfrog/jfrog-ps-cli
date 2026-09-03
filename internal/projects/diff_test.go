@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestMissingOnTarget(t *testing.T) {
@@ -66,6 +68,9 @@ func TestCreateMissing_DryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestCreateMissing_CreatesOnTarget(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/access/api/v1/projects/newproj" {
 			t.Fatalf("unexpected path on source: %s", r.URL.Path)
@@ -116,6 +121,9 @@ func TestDeleteExtra_DryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestDeleteExtra_DeletesFromTarget(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete || r.URL.Path != "/access/api/v1/projects/x" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)

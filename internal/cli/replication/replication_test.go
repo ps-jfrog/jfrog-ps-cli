@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestRunNoArgsReturnsError(t *testing.T) {
@@ -92,6 +94,9 @@ func TestCreateDryRunEndToEndMakesNoMutatingCalls(t *testing.T) {
 }
 
 func TestCreateFromRepoFile(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var puts []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut {

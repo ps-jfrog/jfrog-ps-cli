@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 // captureStdout redirects os.Stdout for the duration of fn and returns
@@ -224,6 +226,9 @@ func TestSyncPoliciesDryRunDefaultMakesNoTargetPost(t *testing.T) {
 }
 
 func TestSyncWatchesAppliesWithDryRunFalse(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"name":"watch1"}]`))
 	}))

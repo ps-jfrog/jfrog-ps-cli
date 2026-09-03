@@ -97,6 +97,9 @@ func TestDeleteReportsDryRunMakesNoCalls(t *testing.T) {
 }
 
 func TestDeleteReportsAppliesDeletes(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var calls []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.URL.Path)

@@ -81,10 +81,45 @@ func (r *Response) Error(context string) error {
 	return fmt.Errorf("%s: HTTP %d: %s", context, r.StatusCode, body)
 }
 
+// WritesDisabled gates off every mutating request while the CLI's write/
+// delete paths are still being verified end-to-end. Flip this back to false
+// once those commands have been tested against a real JPD. Exported so
+// tests exercising the underlying request-construction logic (which don't
+// go through the CLI's own dry-run/confirmation prompts) can opt back into
+// real writes for the duration of a single test.
+var WritesDisabled = true
+
+// readOnlyPostPaths lists POST endpoints that are actually read-only queries
+// despite using POST (some JFrog APIs take a filter/query body on POST
+// rather than GET): AQL search, the Xray artifact-summary lookup, and Xray's
+// report-listing endpoint. Every other POST is treated as a write.
+var readOnlyPostPaths = map[string]bool{
+	"/artifactory/api/search/aql":   true,
+	"/xray/api/v1/summary/artifact": true,
+	"/xray/api/v1/reports":          true,
+}
+
+// checkWriteAllowed refuses any request that would mutate or delete state on
+// the JPD while writesDisabled is set. GET is always allowed; PUT/PATCH/
+// DELETE are always refused; POST is refused unless it targets a known
+// read-only endpoint (see readOnlyPostPaths).
+func checkWriteAllowed(method, path string) error {
+	if !WritesDisabled || method == http.MethodGet {
+		return nil
+	}
+	if method == http.MethodPost && readOnlyPostPaths[path] {
+		return nil
+	}
+	return fmt.Errorf("operation not supported: write/delete operations are disabled in this build (%s %s)", method, path)
+}
+
 // Do issues an HTTP request against path (relative to BaseURL) with the given
 // method. body, if non-nil, is marshaled as JSON unless it is a []byte or
 // string, which are sent as-is (for AQL / plain-text payloads).
 func (c *Client) Do(method, path string, body interface{}) (*Response, error) {
+	if err := checkWriteAllowed(method, path); err != nil {
+		return nil, err
+	}
 	var reader io.Reader
 	contentType := "application/json"
 	switch b := body.(type) {

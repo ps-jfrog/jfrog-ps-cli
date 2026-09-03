@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 // captureStdout redirects os.Stdout for the duration of f and returns
@@ -153,6 +155,9 @@ func TestArtifactsAQLFileFlag(t *testing.T) {
 }
 
 func TestArtifactsRealDeleteWhenDryRunFalse(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	deleteCalled := false
 	srv := artifactsAQLDeleteServer(t, &deleteCalled)
 	defer srv.Close()
@@ -284,6 +289,9 @@ func TestDockerTagsDryRunDefaultNeverDeletes(t *testing.T) {
 }
 
 func TestDockerTagsYesFlagDeletesFullTagDirectory(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	deleteCalled := false
 	var deletedPaths []string
 	srv := dockerTagsServer(t, &deleteCalled, &deletedPaths)
@@ -366,6 +374,9 @@ func TestRemoteCacheDryRunOnlyKeepsXrayExpiredCandidates(t *testing.T) {
 }
 
 func TestRemoteCacheYesFlagDeletesOnlyExpiredCandidate(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	deleteCalled := false
 	var deletedPaths []string
 	srv := remoteCacheServer(t, &deleteCalled, &deletedPaths)
@@ -448,6 +459,9 @@ func TestReposConfirmDeclinedAbortsWithoutDelete(t *testing.T) {
 }
 
 func TestReposYesFlagDeletesForReal(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	deleteCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
@@ -504,6 +518,9 @@ func TestInactiveUsersDryRunDefaultNeverDeletes(t *testing.T) {
 }
 
 func TestInactiveUsersYesFlagDeletesForReal(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	deleteCalled := false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -615,6 +632,9 @@ func TestDiffDeleteArtifactsDryRunDefaultNeverDeletes(t *testing.T) {
 }
 
 func TestDiffDeleteArtifactsYesFlagDeletesForReal(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var targetDeleteCalled bool
 	source, target := diffServers(t, &targetDeleteCalled)
 	defer source.Close()

@@ -55,6 +55,9 @@ func TestBasicAuthFallback(t *testing.T) {
 }
 
 func TestPostJSONBody(t *testing.T) {
+	WritesDisabled = false
+	t.Cleanup(func() { WritesDisabled = true })
+
 	type payload struct {
 		Name string `json:"name"`
 	}

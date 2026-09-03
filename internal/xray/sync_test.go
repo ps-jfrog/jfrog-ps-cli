@@ -38,6 +38,9 @@ func TestSyncPoliciesDryRunMakesNoTargetCalls(t *testing.T) {
 }
 
 func TestSyncPoliciesAppliesGlobalAndProjectScoped(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"name":"global-pol"},{"name":"proj-pol","project_key":"proj1"}]`))
 	}))
@@ -96,6 +99,9 @@ func TestSyncPoliciesAppliesGlobalAndProjectScoped(t *testing.T) {
 }
 
 func TestSyncWatchesStripsNestedProjectKey(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"name":"watch1","general_data":{"project_key":"proj1","other":"x"}}]`))
 	}))
@@ -154,6 +160,9 @@ func TestSyncWatchesDryRunMakesNoTargetCalls(t *testing.T) {
 }
 
 func TestSyncIgnoreRulesAppliesProjectScoped(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"name":"rule1","project_key":"proj1"}]`))
 	}))
@@ -214,6 +223,9 @@ func TestSyncIgnoreRulesDryRunMakesNoTargetCalls(t *testing.T) {
 // simply verifies that both global and project-scoped policies land on the
 // same target test server.
 func TestSyncNeverUsesHardcodedServer(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`[{"name":"global-pol"},{"name":"proj-pol","project_key":"proj1"}]`))
 	}))

@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestBackupWriteAndLoadRoundtrip(t *testing.T) {
@@ -63,6 +65,9 @@ func TestRestoreDryRunMakesNoHTTPCalls(t *testing.T) {
 }
 
 func TestRestoreAppliesPUT(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var gotMethod, gotPath string
 	var gotBody map[string]string
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {

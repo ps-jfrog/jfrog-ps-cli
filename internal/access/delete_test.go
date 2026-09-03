@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func TestParseNamesFile(t *testing.T) {
@@ -73,6 +75,9 @@ func TestDeleteItems_DryRunNoMutatingCalls(t *testing.T) {
 }
 
 func TestDeleteItems_Real(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var calledPaths []string
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {

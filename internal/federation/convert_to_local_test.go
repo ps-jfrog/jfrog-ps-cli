@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"jfrogpscli/internal/jfclient"
 )
 
 func aqlItemsResponse(items ...struct{ Path, Name string }) string {
@@ -52,6 +54,9 @@ func TestPlanConvertToLocalMakesOnlyReadCalls(t *testing.T) {
 }
 
 func TestConvertToLocalFullSuccess(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	var calls []string
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		calls = append(calls, r.Method+" "+r.URL.Path)
@@ -130,6 +135,9 @@ func TestConvertToLocalFullSuccess(t *testing.T) {
 }
 
 func TestConvertToLocalAbortsBeforeDeleteIfCopyToTempFails(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/artifactory/api/repositories/fed1":
@@ -164,6 +172,9 @@ func TestConvertToLocalAbortsBeforeDeleteIfCopyToTempFails(t *testing.T) {
 }
 
 func TestConvertToLocalReportsFailureOnCopyBack(t *testing.T) {
+	jfclient.WritesDisabled = false
+	t.Cleanup(func() { jfclient.WritesDisabled = true })
+
 	deleted := false
 	c, srv := newTestClient(func(w http.ResponseWriter, r *http.Request) {
 		switch {
