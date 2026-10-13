@@ -116,5 +116,76 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 	snap.Xray = xrayCfg
 	snap.Warnings = append(snap.Warnings, xrayWarnings...)
 
+	// Fetch AppTrust/governance data if available - every call here soft-
+	// fails to an empty slice (nil error) when AppTrust isn't licensed, so
+	// no warning noise on instances that don't have it. Each resource
+	// reports its own (found, found) progress once fetched - Update() is a
+	// no-op for a zero total, so an instance without AppTrust never grows a
+	// bar for it, same as every other optional stage here.
+	if policies, err := GetAppTrustPolicies(c); err == nil {
+		snap.AppTrustPolicies = policies
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Policies", len(policies), len(policies))
+		}
+	}
+	if apps, err := GetAppTrustApplications(c); err == nil {
+		snap.AppTrustApplications = apps
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Applications", len(apps), len(apps))
+		}
+	}
+	if rules, err := GetAppTrustRules(c); err == nil {
+		snap.AppTrustRules = rules
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Rules", len(rules), len(rules))
+		}
+	}
+	if templates, err := GetAppTrustTemplates(c); err == nil {
+		snap.AppTrustTemplates = templates
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Templates", len(templates), len(templates))
+		}
+	}
+	if evidence, err := GetAppTrustEvidence(c); err == nil {
+		snap.AppTrustEvidence = evidence
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Evidence", len(evidence), len(evidence))
+		}
+	}
+	if bundles, err := GetAppTrustReleaseBundles(c); err == nil {
+		snap.AppTrustReleaseBundles = bundles
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Release Bundles", len(bundles), len(bundles))
+		}
+	}
+
+	// Stages are per-project (no instance-wide list endpoint), so they're
+	// fetched once per already-collected project key - a live bar across
+	// however many projects there are, same pattern as "Project detail"/
+	// "Federated repos" above.
+	if len(snap.Projects) > 0 {
+		projectKeys := make([]string, len(snap.Projects))
+		for i, p := range snap.Projects {
+			projectKeys[i] = p.Key
+		}
+		snap.AppTrustStages = GetAppTrustStagesForProjects(c, projectKeys, opts.Concurrency, stageProgress("AppTrust Stages"))
+	}
+
+	// Build AppTrust relationship junctions to show how applications, policies,
+	// rules, and templates connect.
+	if len(snap.AppTrustApplications) > 0 && len(snap.AppTrustPolicies) > 0 {
+		snap.AppTrustApplicationPolicies = BuildAppTrustApplicationPolicies(snap.AppTrustApplications, snap.AppTrustPolicies)
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Application-Policy Links", len(snap.AppTrustApplicationPolicies), len(snap.AppTrustApplicationPolicies))
+		}
+	}
+
+	if len(snap.AppTrustPolicies) > 0 && len(snap.AppTrustRules) > 0 {
+		snap.AppTrustPolicyRules = BuildAppTrustPolicyRules(snap.AppTrustPolicies, snap.AppTrustRules, snap.AppTrustTemplates)
+		if opts.Progress != nil {
+			opts.Progress("AppTrust Policy-Rule Links", len(snap.AppTrustPolicyRules), len(snap.AppTrustPolicyRules))
+		}
+	}
+
 	return snap, nil
 }

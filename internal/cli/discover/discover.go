@@ -59,6 +59,10 @@ func Run(args []string) int {
 	doPolicies := fs.Bool("policies", false, "Fetch the repo -> cleanup-policy mapping (one row per repo x match) -> --policies-csv")
 	doInstance := fs.Bool("instance", false, "Fetch the instance-wide snapshot (versions, security, access, projects, platform, Xray) -> --instance-json")
 	doAnalyze := fs.Bool("analyze", false, "Render the self-contained HTML audit from --repos-csv (+ --instance-json if present) -> --audit-html")
+	doCrossEnvAnalyze := fs.Bool("cross-env-analyze", false, "Analyze multiple environment outputs and report on duplicate repositories across environments -> --cross-env-report")
+	doProjectRoles := fs.Bool("project-roles", false, "List all project roles (one row per project x role) -> --project-roles-csv")
+	doProjectRepos := fs.Bool("project-repos", false, "List all project-to-repository mappings -> --project-repos-csv")
+	doAppTrust := fs.Bool("apptrust", false, "List all AppTrust applications/policies/rules/templates/stages/evidence/release-bundles -> --apptrust-csv")
 	doAll := fs.Bool("all", false, "Shorthand for --repos --policies --instance --analyze")
 	parallel := fs.Bool("parallel", true, "Run --repos/--policies/--instance concurrently instead of sequentially when more than one is selected - faster, since they're independent network calls against the same JPD (each still gets its own live progress bar); set false to run sequentially instead")
 
@@ -68,6 +72,10 @@ func Run(args []string) int {
 	policiesCSV := fs.String("policies-csv", "", "Path for the policy-mapping CSV (written by --policies) - default: <output>/<instance>/policies.csv")
 	instanceJSON := fs.String("instance-json", "", "Path for the instance snapshot JSON (written by --instance, read by --analyze if present) - default: <output>/<instance>/instance.json")
 	auditHTML := fs.String("audit-html", "", "Path for the rendered HTML audit (written by --analyze) - default: <output>/<instance>/audit.html")
+	crossEnvReport := fs.String("cross-env-report", "", "--cross-env-analyze: output path for the cross-environment analysis report (default: <output>/cross-env-analysis.txt; also generates .json and .html versions)")
+	projectRolesCSV := fs.String("project-roles-csv", "", "Path for the project roles CSV (written by --project-roles) - default: <output>/<instance>/project-roles.csv")
+	projectReposCSV := fs.String("project-repos-csv", "", "Path for the project repositories CSV (written by --project-repos) - default: <output>/<instance>/project-repos.csv")
+	appTrustCSV := fs.String("apptrust-csv", "", "Path for the AppTrust CSV (written by --apptrust) - default: <output>/<instance>/apptrust.csv")
 
 	// --- --repos-specific flags ---
 	concurrency := fs.Int("concurrency", 8, "Repos/permission-targets/federated-repos/projects processed concurrently (be considerate on shared instances)")
@@ -93,10 +101,17 @@ func Run(args []string) int {
 
 	if *doAll {
 		*doRepos, *doPolicies, *doInstance, *doAnalyze = true, true, true, true
+		*doProjectRoles, *doProjectRepos, *doAppTrust = true, true, true
 	}
-	if !*doRepos && !*doPolicies && !*doInstance && !*doAnalyze {
+	if !*doRepos && !*doPolicies && !*doInstance && !*doAnalyze && !*doCrossEnvAnalyze && !*doProjectRoles && !*doProjectRepos && !*doAppTrust {
 		printUsage()
 		return 1
+	}
+
+	// --project-roles, --project-repos, and --apptrust require instance data,
+	// so if any of them are requested without --instance, enable it.
+	if (*doProjectRoles || *doProjectRepos || *doAppTrust) && !*doInstance {
+		*doInstance = true
 	}
 
 	// Any path flag left at its default ("") lands under <output>/<instance>/
@@ -116,6 +131,18 @@ func Run(args []string) int {
 	if *auditHTML == "" {
 		*auditHTML = filepath.Join(targetDir, "audit.html")
 	}
+	if *crossEnvReport == "" {
+		*crossEnvReport = filepath.Join(*outputDir, "cross-env-analysis.txt")
+	}
+	if *projectRolesCSV == "" {
+		*projectRolesCSV = filepath.Join(targetDir, "project-roles.csv")
+	}
+	if *projectReposCSV == "" {
+		*projectReposCSV = filepath.Join(targetDir, "project-repos.csv")
+	}
+	if *appTrustCSV == "" {
+		*appTrustCSV = filepath.Join(targetDir, "apptrust.csv")
+	}
 
 	// Only the pieces that talk to Artifactory need a resolved client;
 	// --analyze alone makes no network calls at all.
@@ -129,6 +156,8 @@ func Run(args []string) int {
 		client = c
 	}
 
+	// Count how many network operations we'll run
+	// Project-roles/repos/apptrust are derived from instance data, not separate calls
 	selected := 0
 	for _, on := range []bool{*doRepos, *doPolicies, *doInstance} {
 		if on {
@@ -197,9 +226,50 @@ func Run(args []string) int {
 		}
 	}
 
+	// Extract and write CSV files from the snapshot for project roles,
+	// project repos, and AppTrust data (requires --instance to have run)
+	var snap *instance.Snapshot
+	if *doInstance {
+		// Try to load the instance snapshot that was just created
+		if instF, err := os.Open(*instanceJSON); err == nil {
+			snap, _ = instance.ReadJSON(instF)
+			instF.Close()
+		}
+	}
+
+	if *doProjectRoles && snap != nil {
+		if code := doProjectRolesCSV(snap, *projectRolesCSV, mb, errs); code != 0 {
+			return code
+		}
+	} else if *doProjectRoles {
+		mb.Log("discover --project-roles: not writing CSV (--instance was not run)")
+	}
+
+	if *doProjectRepos && snap != nil {
+		if code := doProjectReposCSV(snap, *projectReposCSV, mb, errs); code != 0 {
+			return code
+		}
+	} else if *doProjectRepos {
+		mb.Log("discover --project-repos: not writing CSV (--instance was not run)")
+	}
+
+	if *doAppTrust && snap != nil {
+		if code := doAppTrustCSVs(snap, *appTrustCSV, mb, errs); code != 0 {
+			return code
+		}
+	} else if *doAppTrust {
+		mb.Log("discover --apptrust: not writing CSV (--instance was not run)")
+	}
+
 	analyzeCode := 0
 	if *doAnalyze {
 		analyzeCode = doAnalyzeReport(*reposCSV, *instanceJSON, *auditHTML, *staleDays, *hugeGB, *massiveFiles, *longNameChars)
+	}
+
+	if *doCrossEnvAnalyze {
+		if code := doCrossEnvAnalyzeReport(*outputDir, *crossEnvReport, mb, errs); code != 0 {
+			analyzeCode = code
+		}
 	}
 
 	if errList := errs.list(); len(errList) > 0 {
@@ -212,25 +282,29 @@ func Run(args []string) int {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: jfps discover [--repos] [--policies] [--instance] [--analyze] [--all] [flags]")
+	fmt.Fprintln(os.Stderr, "Usage: jfps discover [--repos] [--policies] [--instance] [--project-roles] [--project-repos] [--apptrust] [--analyze] [--cross-env-analyze] [--all] [flags]")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "Flags select which piece(s) to run - repos/policies/instance run concurrently by default when more")
+	fmt.Fprintln(os.Stderr, "Flags select which piece(s) to run - most operations run concurrently by default when more")
 	fmt.Fprintln(os.Stderr, "than one is selected, each with its own live progress bar (--parallel=false to run sequentially instead), and analyze")
 	fmt.Fprintln(os.Stderr, "always runs last, so 'discover --repos --instance --analyze' generates the report and snapshot,")
 	fmt.Fprintln(os.Stderr, "then renders the combined HTML audit, all in one invocation.")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  --repos       Per-repo package type, file count, usage, project, last-push/last-pull, cleanup-policy detail -> --repos-csv")
-	fmt.Fprintln(os.Stderr, "  --policies    Map every repo to its matching cleanup policy/policies (one row per repo x match) -> --policies-csv")
-	fmt.Fprintln(os.Stderr, "  --instance    Versions, storage, auth/signing-keys, users/groups/permissions, projects, platform & Xray config -> --instance-json")
-	fmt.Fprintln(os.Stderr, "  --analyze     Turn --repos-csv (+ --instance-json if present) into a self-contained interactive HTML audit -> --audit-html")
-	fmt.Fprintln(os.Stderr, "  --all         Shorthand for --repos --policies --instance --analyze")
+	fmt.Fprintln(os.Stderr, "  --repos               Per-repo package type, file count, usage, project, last-push/last-pull, cleanup-policy detail -> --repos-csv")
+	fmt.Fprintln(os.Stderr, "  --policies            Map every repo to its matching cleanup policy/policies (one row per repo x match) -> --policies-csv")
+	fmt.Fprintln(os.Stderr, "  --instance            Versions, storage, auth/signing-keys, users/groups/permissions, projects, platform & Xray config -> --instance-json")
+	fmt.Fprintln(os.Stderr, "  --project-roles       List all project roles (one row per project x role) -> --project-roles-csv")
+	fmt.Fprintln(os.Stderr, "  --project-repos       List all project-to-repository mappings -> --project-repos-csv")
+	fmt.Fprintln(os.Stderr, "  --apptrust            List all AppTrust applications/policies/rules/templates/stages/evidence/release-bundles -> --apptrust-csv")
+	fmt.Fprintln(os.Stderr, "  --analyze             Turn --repos-csv (+ --instance-json if present) into a self-contained interactive HTML audit -> --audit-html")
+	fmt.Fprintln(os.Stderr, "  --cross-env-analyze   Scan --output directory for multiple environment outputs and report duplicate repositories -> --cross-env-report")
+	fmt.Fprintln(os.Stderr, "  --all                 Comprehensive discovery: --repos --policies --instance --project-roles --project-repos --apptrust --analyze")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Output files land under --output (default \"output\"), in a subfolder named after the JPD's")
 	fmt.Fprintln(os.Stderr, "hostname, e.g. 'output/psazuse/report.csv' - unless --repos-csv/--policies-csv/--instance-json/")
-	fmt.Fprintln(os.Stderr, "--audit-html override an individual path explicitly.")
+	fmt.Fprintln(os.Stderr, "--project-roles-csv/--project-repos-csv/--apptrust-csv override an individual path explicitly.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps discover -h' to see every flag (output paths, concurrency, caps, analyze thresholds).")
-	fmt.Fprintln(os.Stderr, "Everything here is read-only - none of it ever writes to Artifactory. --analyze makes no network calls at all.")
+	fmt.Fprintln(os.Stderr, "Everything here is read-only - none of it ever writes to Artifactory. --analyze and --cross-env-analyze make no network calls at all.")
 }
 
 // runErrors collects errors hit while running the selected discovery
@@ -532,3 +606,209 @@ func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays in
 	printNextSteps(fmt.Sprintf("open %s in a browser to explore the report", outputPath))
 	return 0
 }
+
+// ---------------------------------------------------------------------------
+// cross-env-analyze
+// ---------------------------------------------------------------------------
+
+func doCrossEnvAnalyzeReport(outputDir, reportPath string, mb *progress.Bars, errs *runErrors) int {
+	mb.Log("discover --cross-env-analyze: scanning environments in", outputDir)
+
+	report, err := analyze.AnalyzeCrossEnvironments(outputDir)
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("cross-env-analyze: %v", err)
+		return 1
+	}
+
+	report.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+
+	if err := ensureParentDir(reportPath); err != nil {
+		mb.Log("error:", err)
+		errs.add("cross-env-analyze: %v", err)
+		return 1
+	}
+
+	if err := analyze.WriteCrossEnvReport(report, reportPath); err != nil {
+		mb.Log("error:", err)
+		errs.add("cross-env-analyze: %v", err)
+		return 1
+	}
+
+	baseDir := filepath.Dir(reportPath)
+	baseName := strings.TrimSuffix(filepath.Base(reportPath), filepath.Ext(reportPath))
+	jsonPath := filepath.Join(baseDir, baseName+".json")
+	htmlPath := filepath.Join(baseDir, baseName+".html")
+
+	mb.Logf("Cross-environment analysis complete: %d environment(s), %d total repo(s), %d duplicate(s)\n",
+		len(report.Environments), report.TotalRepos, report.DuplicateCount)
+	mb.Logf("Wrote %s\n", reportPath)
+	mb.Logf("Wrote %s\n", jsonPath)
+	mb.Logf("Wrote %s\n", htmlPath)
+
+	printNextSteps(
+		fmt.Sprintf("open %s in a browser to explore the interactive report", htmlPath),
+		fmt.Sprintf("view text summary: %s", reportPath),
+		fmt.Sprintf("view JSON data: %s", jsonPath),
+	)
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// project roles, project repos, and apptrust (derived from instance data)
+// ---------------------------------------------------------------------------
+
+func doProjectRolesCSV(snap *instance.Snapshot, csvPath string, mb *progress.Bars, errs *runErrors) int {
+	roles := discover.FlattenProjectRoles(snap.Projects)
+	if err := ensureParentDir(csvPath); err != nil {
+		mb.Log("error:", err)
+		errs.add("project-roles: %v", err)
+		return 0
+	}
+	f, err := os.Create(csvPath)
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("project-roles: %v", err)
+		return 0
+	}
+	defer f.Close()
+	if err := discover.WriteProjectRolesCSV(f, roles); err != nil {
+		mb.Log("error:", err)
+		errs.add("project-roles: %v", err)
+		return 0
+	}
+	mb.Logf("Wrote %d project role(s) to %s\n", len(roles), csvPath)
+	return 0
+}
+
+func doProjectReposCSV(snap *instance.Snapshot, csvPath string, mb *progress.Bars, errs *runErrors) int {
+	// We need the repos list for detailed mapping info; for now, build from projects
+	mappings := discover.BuildProjectRepositoryMapping(snap.Projects, nil)
+	if err := ensureParentDir(csvPath); err != nil {
+		mb.Log("error:", err)
+		errs.add("project-repos: %v", err)
+		return 0
+	}
+	f, err := os.Create(csvPath)
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("project-repos: %v", err)
+		return 0
+	}
+	defer f.Close()
+	if err := discover.WriteProjectRepositoriesCSV(f, mappings); err != nil {
+		mb.Log("error:", err)
+		errs.add("project-repos: %v", err)
+		return 0
+	}
+	mb.Logf("Wrote %d project-repository mapping(s) to %s\n", len(mappings), csvPath)
+	return 0
+}
+
+func doAppTrustCSVs(snap *instance.Snapshot, csvPathPattern string, mb *progress.Bars, errs *runErrors) int {
+	// Replace .csv with .<resource>.csv to generate multiple files from one pattern
+	// e.g. /path/to/apptrust.csv -> /path/to/apptrust.applications.csv, etc.
+	dir := filepath.Dir(csvPathPattern)
+	ext := filepath.Ext(csvPathPattern)
+	base := strings.TrimSuffix(filepath.Base(csvPathPattern), ext)
+
+	resources := []struct {
+		name   string
+		count  int
+		write  func(path string) error
+	}{
+		{"applications", len(snap.AppTrustApplications), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustApplicationsCSV(f, snap.AppTrustApplications)
+		}},
+		{"policies", len(snap.AppTrustPolicies), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustPoliciesCSV(f, snap.AppTrustPolicies)
+		}},
+		{"rules", len(snap.AppTrustRules), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustRulesCSV(f, snap.AppTrustRules)
+		}},
+		{"templates", len(snap.AppTrustTemplates), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustTemplatesCSV(f, snap.AppTrustTemplates)
+		}},
+		{"stages", len(snap.AppTrustStages), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustStagesCSV(f, snap.AppTrustStages)
+		}},
+		{"evidence", len(snap.AppTrustEvidence), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustEvidenceCSV(f, snap.AppTrustEvidence)
+		}},
+		{"release-bundles", len(snap.AppTrustReleaseBundles), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustReleaseBundlesCSV(f, snap.AppTrustReleaseBundles)
+		}},
+		{"application-policies", len(snap.AppTrustApplicationPolicies), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustApplicationPoliciesCSV(f, snap.AppTrustApplicationPolicies)
+		}},
+		{"policy-rules", len(snap.AppTrustPolicyRules), func(path string) error {
+			f, err := os.Create(path)
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+			return discover.WriteAppTrustPolicyRulesCSV(f, snap.AppTrustPolicyRules)
+		}},
+	}
+
+	if err := ensureParentDir(csvPathPattern); err != nil {
+		mb.Log("error:", err)
+		errs.add("apptrust: %v", err)
+		return 0
+	}
+
+	for _, r := range resources {
+		if r.count == 0 {
+			continue
+		}
+		path := filepath.Join(dir, fmt.Sprintf("%s.%s%s", base, r.name, ext))
+		if err := r.write(path); err != nil {
+			mb.Log("error:", err)
+			errs.add("apptrust %s: %v", r.name, err)
+			return 0
+		}
+		mb.Logf("Wrote %d AppTrust %s to %s\n", r.count, r.name, path)
+	}
+	return 0
+}
+

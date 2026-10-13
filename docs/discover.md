@@ -28,8 +28,12 @@ invocation always picks up whatever `--repos`/`--instance` just wrote.
 | [`--repos`](#--repos) | Per-repo package type, file count, usage, project assignment, created/last-push/last-pull, and matched cleanup-policy detail → `--repos-csv` |
 | [`--policies`](#--policies) | Map every repo to its matching cleanup policy/policies (one row per repo × match) → `--policies-csv` |
 | [`--instance`](#--instance) | Component versions, storage, auth/signing-key config, users/groups/permission-target access, projects, replication & federation, platform config, Xray config → `--instance-json` |
+| [`--project-roles`](#--project-roles) | List all project roles (one row per project × role combination) → `--project-roles-csv` |
+| [`--project-repos`](#--project-repos) | List all project-to-repository mappings with package type and repo type → `--project-repos-csv` |
+| [`--apptrust`](#--apptrust) | AppTrust applications, policies, rules, templates, lifecycle stages, evidence, and release bundles (collected as part of `--instance`) |
 | [`--analyze`](#--analyze) | Turn `--repos-csv` (+ `--instance-json` if present) into a self-contained interactive HTML audit → `--audit-html` |
-| `--all` | Shorthand for all four together |
+| [`--cross-env-analyze`](#--cross-env-analyze) | Scan the `--output` directory for discovery outputs from multiple environments and report duplicate repositories across environments → `--cross-env-report` |
+| `--all` | Comprehensive discovery: --repos --policies --instance --project-roles --project-repos --apptrust --analyze |
 
 **Output paths:** `--repos-csv`/`--policies-csv`/`--instance-json`/`--audit-html`
 each default to a path under `--output` (default `output`), in a subfolder
@@ -379,3 +383,154 @@ sequenceDiagram
     CLI->>CLI: render self-contained HTML (data embedded)
     CLI-->>User: write audit.html
 ```
+
+---
+
+## `--cross-env-analyze`
+
+**What it does:** Scans the `--output` directory (or a custom path) for discovery outputs from multiple environments and generates a unified report identifying repositories that exist in more than one environment.
+
+This is useful for:
+- **Configuration audits** - Find repos with the same name but different configurations across environments
+- **Compliance & governance** - Identify duplicate repos that might violate organizational policies
+- **Migration planning** - Validate which repos should be replicated or consolidated
+- **Disaster recovery** - Confirm backup/DR strategies and replication setup
+
+**Key flags:**
+- `--cross-env-report` (default `<output>/cross-env-analysis.txt`) — base path for the reports (automatically generates `.txt`, `.json`, and `.html` versions)
+- `--output` (default `output`) — path to scan for multiple environment directories
+
+**Output files:** Three complementary formats with the same base name:
+- `.html` — Interactive visual report (recommended, works offline, embedded styling)
+- `.txt` — Human-readable text summary
+- `.json` — Machine-readable structured data
+
+**Output:** Two files are generated:
+1. **Text Report** (`.txt`) — Human-readable cross-environment analysis with duplicate details
+2. **JSON Report** (`.json`) — Machine-readable format for programmatic use and integration
+
+**Example usage:**
+
+```sh
+# Run cross-environment analysis on all environments in the output directory
+jfps discover --cross-env-analyze
+
+# Or with custom paths
+jfps discover --cross-env-analyze --output ./my-discoveries --cross-env-report ./analysis.txt
+
+# Generate a new discovery for one environment, then analyze across all environments
+jfps discover --all --url https://prod.jfrog.io --token ... && \
+jfps discover --cross-env-analyze
+```
+
+**Report structure:**
+
+The text report includes:
+- Summary of all environments and duplicate counts
+- Per-environment breakdown (repo count, duplicate count)
+- Detailed list of duplicate repositories with:
+  - Environments where each duplicate appears
+  - Full configuration details from each environment (type, project, size, dates, policies)
+
+The JSON report provides the same data in structured format for:
+- Automated analysis and alerting
+- Integration with other tools
+- Data pipeline processing
+- Dashboard visualization
+
+**Example output snippet:**
+
+```
+[1] shared-libraries
+    ⚠️  DUPLICATE FOUND IN: production, staging
+    Details:
+      production:
+        Type: npm / LOCAL
+        Project: shared
+        Size: 5000 files | 125.3 GB
+        Created: 2024-01-15T10:30:00Z by admin
+        Last Activity: 2026-09-20T14:22:15Z
+        Policies: weekly-cleanup | monthly-archive
+      
+      staging:
+        Type: npm / LOCAL
+        Project: shared
+        Size: 4800 files | 120.1 GB
+        Created: 2024-01-15T10:30:00Z by admin
+        Last Activity: 2026-09-15T08:15:32Z
+        Policies: weekly-cleanup
+```
+
+**Environment discovery:** 
+
+The tool automatically discovers all environment directories under `--output` (defaults to `./output`). Each environment must have a `report.csv` file to be included in the analysis. This typically comes from a `--repos` or `--all` discovery run:
+
+```sh
+# Discover production environment
+jfps discover --all --url https://prod.jfrog.io --token ... 
+
+# Discover staging environment
+jfps discover --all --url https://staging.jfrog.io --token ...
+
+# Now analyze duplicates across both
+jfps discover --cross-env-analyze
+```
+
+**Safety notes:** none — this step makes no network calls at all.
+
+---
+
+## `--project-roles`
+
+**What it does:** Fetches every project and extracts all defined roles (both predefined and custom roles) for each project. Outputs one row per project × role combination, making it easy to see which roles are configured on each project and what their environments/actions are.
+
+**Key flags:**
+- `--project-roles-csv` (default `<output>/<instance>/project-roles.csv`, see "Output paths" above) — output path
+- `--project-detail` (default `true`) — must be enabled on `--instance` for role data to be included in the snapshot
+
+**Safety notes:** none (read-only, minimal API calls).
+
+```
+project_key,project_name,role_name,role_type,environments,actions
+team-a,Team A,Developer,CUSTOM,dev|qa,deploy|read|manage
+team-a,Team A,Admin,PREDEFINED,dev|qa|prod,*
+team-b,Team B,Viewer,CUSTOM,prod,read
+```
+
+---
+
+## `--project-repos`
+
+**What it does:** Fetches all projects and repositories, then creates a flat mapping of which repositories belong to which projects. Includes package type and repo type for each mapping, making it easy to audit project-repository relationships.
+
+**Key flags:**
+- `--project-repos-csv` (default `<output>/<instance>/project-repos.csv`, see "Output paths" above) — output path
+
+**Safety notes:** none (read-only).
+
+```
+project_key,repo_name,package_type,repo_type
+team-a,team-a-docker,Docker,LOCAL
+team-a,team-a-npm,npm,LOCAL
+team-a,team-a-virtual,npm,VIRTUAL
+team-b,team-b-maven,Maven,LOCAL
+```
+
+---
+
+## `--apptrust`
+
+**What it does:** AppTrust/governance data is collected as part of `--instance` (see below) and rendered on the HTML report's **AppTrust** tab - this flag just acknowledges the request (there's nothing separate to fetch). Backed by the [JFrog AppTrust REST API reference](https://docs.jfrog.com/governance/reference/apptrust-rest-api-reference):
+
+- **Applications** (`GET /apptrust/api/v1/applications`) — key, name, project, criticality, maturity level, owners, labels
+- **Policies** (`GET /unifiedpolicy/api/v1/policies`) — JFrog Unified Policy Service, shared with Xray/Curation governance: mode (block/warning), scope, stage/gate binding, waiver config
+- **Rules** (`GET /unifiedpolicy/api/v1/rules`) — the template instantiations a policy references
+- **Templates** (`GET /unifiedpolicy/api/v1/templates`) — the underlying check logic (category, scanners, data source)
+- **Lifecycle stages** (`GET /apptrust/api/v1/projects/{project_key}/lifecycle/stages`) — per-project, since there's no instance-wide list; fetched once per project (concurrently, bounded by `--concurrency`), each with its gates
+- **Evidence** (`GET /evidence/api/v1/evidence-search`) — DSSE/in-toto attestations attached to builds/packages/release bundles
+- **Release bundles** (`GET /lifecycle/api/v2/release_bundle/names`) — Release Bundle v2 names, not individual versions
+
+Every endpoint 404s cleanly (empty result, no warning) when AppTrust/governance isn't licensed on the instance.
+
+**Safety notes:** none (read-only).
+

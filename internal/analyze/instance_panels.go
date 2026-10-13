@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,9 +37,12 @@ func renderInstanceTabs(snap *instance.Snapshot) (navHTML, panelsHTML string, er
 		build func(*instance.Snapshot) (string, error)
 	}{
 		{"projects", "Projects", renderProjectsPanel},
+		{"project-roles", "Project Roles", renderProjectRolesPanel},
+		{"project-repos", "Project Repositories", renderProjectRepositoriesPanel},
 		{"access", "Access", renderAccessPanel},
 		{"fedrep", "Federation & Replication", renderFederationReplicationPanel},
 		{"platform", "Platform Config", renderPlatformConfigPanel},
+		{"apptrust", "AppTrust", renderAppTrustPanel},
 		{"xray", "Xray", renderXrayPanel},
 		{"curation", "Curation", renderCurationPanel},
 	}
@@ -100,6 +104,15 @@ func renderOverviewPanel(snap *instance.Snapshot, repoCount int) (string, error)
 	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--amber)"><strong>%d</strong><span>federated repos</span></div>`, len(snap.FederatedRepos))
 	fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>replication configs</span></div>`, len(snap.Replications))
 	fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--slate)"><strong>%d</strong><span>global roles</span></div>`, len(snap.Platform.GlobalRoles))
+	totalAppTrust := len(snap.AppTrustPolicies) + len(snap.AppTrustApplications) +
+		len(snap.AppTrustRules) + len(snap.AppTrustTemplates) +
+		len(snap.AppTrustStages) + len(snap.AppTrustEvidence) + len(snap.AppTrustReleaseBundles)
+	if totalAppTrust > 0 {
+		fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>apptrust applications</span></div>`, len(snap.AppTrustApplications))
+		fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--purple)"><strong>%d</strong><span>apptrust policies</span></div>`, len(snap.AppTrustPolicies))
+		fmt.Fprintf(&b, `<div class="stat"><strong>%d</strong><span>apptrust rules</span></div>`, len(snap.AppTrustRules))
+		fmt.Fprintf(&b, `<div class="stat" style="border-top-color:var(--teal)"><strong>%d</strong><span>release bundles</span></div>`, len(snap.AppTrustReleaseBundles))
+	}
 	b.WriteString("</section>")
 
 	if len(sys.Addons) > 0 {
@@ -736,6 +749,433 @@ func componentStatCard(name string, available bool, version string) string {
 		return fmt.Sprintf(`<div class="stat" style="border-top-color:var(--slate)"><strong>-</strong><span>%s (not available)</span></div>`, htmlEscape(name))
 	}
 	return fmt.Sprintf(`<div class="stat"><strong>%s</strong><span>%s</span></div>`, htmlEscape(orDash(version)), htmlEscape(name))
+}
+
+// renderProjectRolesPanel displays all project roles in a table
+func renderProjectRolesPanel(snap *instance.Snapshot) (string, error) {
+	var b strings.Builder
+
+	roles := make([]interface{}, 0, len(snap.Projects)*3)
+	for _, p := range snap.Projects {
+		for _, role := range p.Roles {
+			roles = append(roles, struct {
+				ProjectKey   string `json:"project_key"`
+				DisplayName  string `json:"display_name"`
+				Name         string `json:"name"`
+				Type         string `json:"type"`
+				Environments string `json:"environments"`
+				Actions      string `json:"actions"`
+			}{
+				ProjectKey:   p.Key,
+				DisplayName:  p.DisplayName,
+				Name:         role.Name,
+				Type:         role.Type,
+				Environments: strings.Join(role.Environments, ", "),
+				Actions:      strings.Join(role.Actions, ", "),
+			})
+		}
+	}
+
+	if len(roles) == 0 {
+		b.WriteString(`<div class="callout info"><strong>No project roles found.</strong></div>`)
+		return b.String(), nil
+	}
+
+	b.WriteString(fmt.Sprintf("<h2>Project Roles (%d)</h2>", len(roles)))
+	tableHTML, err := renderGenericTable("project-roles", roles, []tableColumn{
+		{Key: "project_key", Label: "Project"},
+		{Key: "display_name", Label: "Display Name"},
+		{Key: "name", Label: "Role Name"},
+		{Key: "type", Label: "Type"},
+		{Key: "environments", Label: "Environments"},
+		{Key: "actions", Label: "Actions"},
+	})
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(tableHTML)
+	return b.String(), nil
+}
+
+// renderProjectRepositoriesPanel displays all project-repository mappings in a table
+func renderProjectRepositoriesPanel(snap *instance.Snapshot) (string, error) {
+	var b strings.Builder
+
+	mappings := make([]interface{}, 0)
+	for _, p := range snap.Projects {
+		for _, repoKey := range p.Repos {
+			mappings = append(mappings, struct {
+				ProjectKey  string `json:"project_key"`
+				DisplayName string `json:"display_name"`
+				RepoKey     string `json:"repo_key"`
+			}{
+				ProjectKey:  p.Key,
+				DisplayName: p.DisplayName,
+				RepoKey:     repoKey,
+			})
+		}
+	}
+
+	if len(mappings) == 0 {
+		b.WriteString(`<div class="callout info"><strong>No project-repository mappings found.</strong></div>`)
+		return b.String(), nil
+	}
+
+	b.WriteString(fmt.Sprintf("<h2>Project Repositories (%d)</h2>", len(mappings)))
+	tableHTML, err := renderGenericTable("project-repos", mappings, []tableColumn{
+		{Key: "project_key", Label: "Project Key"},
+		{Key: "display_name", Label: "Project Name"},
+		{Key: "repo_key", Label: "Repository"},
+	})
+	if err != nil {
+		return "", err
+	}
+	b.WriteString(tableHTML)
+	return b.String(), nil
+}
+
+// renderAppTrustPanel displays AppTrust data
+func renderAppTrustPanel(snap *instance.Snapshot) (string, error) {
+	var b strings.Builder
+
+	hasData := len(snap.AppTrustPolicies) > 0 || len(snap.AppTrustApplications) > 0 ||
+		len(snap.AppTrustRules) > 0 || len(snap.AppTrustTemplates) > 0 ||
+		len(snap.AppTrustStages) > 0 || len(snap.AppTrustEvidence) > 0 ||
+		len(snap.AppTrustReleaseBundles) > 0
+
+	if !hasData {
+		b.WriteString(`<div class="callout info"><strong>No AppTrust data found.</strong> AppTrust may not be licensed or configured on this instance.</div>`)
+		return b.String(), nil
+	}
+
+	// Applications
+	if len(snap.AppTrustApplications) > 0 {
+		apps := make([]interface{}, len(snap.AppTrustApplications))
+		for i, a := range snap.AppTrustApplications {
+			apps[i] = struct {
+				ApplicationKey  string `json:"application_key"`
+				ApplicationName string `json:"application_name"`
+				ProjectKey      string `json:"project_key"`
+				Criticality     string `json:"criticality"`
+				MaturityLevel   string `json:"maturity_level"`
+				UserOwners      string `json:"user_owners"`
+				GroupOwners     string `json:"group_owners"`
+				Description     string `json:"description"`
+			}{
+				ApplicationKey:  a.ApplicationKey,
+				ApplicationName: a.ApplicationName,
+				ProjectKey:      a.ProjectKey,
+				Criticality:     orDash(a.Criticality),
+				MaturityLevel:   orDash(a.MaturityLevel),
+				UserOwners:      strings.Join(a.UserOwners, ", "),
+				GroupOwners:     strings.Join(a.GroupOwners, ", "),
+				Description:     a.Description,
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Applications (%d)</h2>", len(apps)))
+		tableHTML, err := renderGenericTable("apptrust-applications", apps, []tableColumn{
+			{Key: "application_name", Label: "Application Name"},
+			{Key: "application_key", Label: "Key"},
+			{Key: "project_key", Label: "Project"},
+			{Key: "criticality", Label: "Criticality"},
+			{Key: "maturity_level", Label: "Maturity"},
+			{Key: "user_owners", Label: "User Owners"},
+			{Key: "group_owners", Label: "Group Owners"},
+			{Key: "description", Label: "Description"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Policies (JFrog Unified Policy Service)
+	if len(snap.AppTrustPolicies) > 0 {
+		policies := make([]interface{}, len(snap.AppTrustPolicies))
+		for i, p := range snap.AppTrustPolicies {
+			policies[i] = struct {
+				Name                string `json:"name"`
+				Enabled             string `json:"enabled"`
+				Mode                string `json:"mode"`
+				ScopeType           string `json:"scope_type"`
+				StageKey            string `json:"stage_key"`
+				StageGate           string `json:"stage_gate"`
+				WaiverRequestConfig string `json:"waiver_request_config"`
+				Description         string `json:"description"`
+			}{
+				Name:                p.Name,
+				Enabled:             yesNo(p.Enabled),
+				Mode:                orDash(p.Mode),
+				ScopeType:           orDash(p.Scope.ScopeType),
+				StageKey:            orDash(p.StageKey),
+				StageGate:           orDash(p.StageGate),
+				WaiverRequestConfig: orDash(p.WaiverRequestConfig),
+				Description:         p.Description,
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Policies (%d)</h2>", len(policies)))
+		tableHTML, err := renderGenericTable("apptrust-policies", policies, []tableColumn{
+			{Key: "name", Label: "Policy Name"},
+			{Key: "enabled", Label: "Enabled"},
+			{Key: "mode", Label: "Mode"},
+			{Key: "scope_type", Label: "Scope"},
+			{Key: "stage_key", Label: "Stage"},
+			{Key: "stage_gate", Label: "Gate"},
+			{Key: "waiver_request_config", Label: "Waiver Config"},
+			{Key: "description", Label: "Description"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Rules (JFrog Unified Policy Service)
+	if len(snap.AppTrustRules) > 0 {
+		rules := make([]interface{}, len(snap.AppTrustRules))
+		for i, r := range snap.AppTrustRules {
+			rules[i] = struct {
+				Name        string `json:"name"`
+				TemplateID  string `json:"template_id"`
+				IsCustom    string `json:"is_custom"`
+				Description string `json:"description"`
+				CreatedBy   string `json:"created_by"`
+			}{
+				Name:        r.Name,
+				TemplateID:  r.TemplateID,
+				IsCustom:    yesNo(r.IsCustom),
+				Description: r.Description,
+				CreatedBy:   orDash(r.CreatedBy),
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Rules (%d)</h2>", len(rules)))
+		tableHTML, err := renderGenericTable("apptrust-rules", rules, []tableColumn{
+			{Key: "name", Label: "Rule Name"},
+			{Key: "template_id", Label: "Template ID"},
+			{Key: "is_custom", Label: "Custom"},
+			{Key: "description", Label: "Description"},
+			{Key: "created_by", Label: "Created By"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Templates (JFrog Unified Policy Service)
+	if len(snap.AppTrustTemplates) > 0 {
+		templates := make([]interface{}, len(snap.AppTrustTemplates))
+		for i, t := range snap.AppTrustTemplates {
+			templates[i] = struct {
+				Name           string `json:"name"`
+				Category       string `json:"category"`
+				Scanners       string `json:"scanners"`
+				DataSourceType string `json:"data_source_type"`
+				IsCustom       string `json:"is_custom"`
+				Description    string `json:"description"`
+			}{
+				Name:           t.Name,
+				Category:       orDash(t.Category),
+				Scanners:       strings.Join(t.Scanners, ", "),
+				DataSourceType: orDash(t.DataSourceType),
+				IsCustom:       yesNo(t.IsCustom),
+				Description:    t.Description,
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Templates (%d)</h2>", len(templates)))
+		tableHTML, err := renderGenericTable("apptrust-templates", templates, []tableColumn{
+			{Key: "name", Label: "Template Name"},
+			{Key: "category", Label: "Category"},
+			{Key: "scanners", Label: "Scanners"},
+			{Key: "data_source_type", Label: "Data Source"},
+			{Key: "is_custom", Label: "Custom"},
+			{Key: "description", Label: "Description"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Lifecycle Stages (per-project)
+	if len(snap.AppTrustStages) > 0 {
+		stages := make([]interface{}, len(snap.AppTrustStages))
+		for i, s := range snap.AppTrustStages {
+			stages[i] = struct {
+				ProjectKey string `json:"project_key"`
+				Category   string `json:"category"`
+				StageName  string `json:"stage_name"`
+				Scope      string `json:"scope"`
+				Gates      string `json:"gates"`
+			}{
+				ProjectKey: orDash(s.ProjectKey),
+				Category:   orDash(s.Category),
+				StageName:  s.StageName,
+				Scope:      orDash(s.Scope),
+				Gates:      strings.Join(s.Gates, ", "),
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Lifecycle Stages (%d)</h2>", len(stages)))
+		tableHTML, err := renderGenericTable("apptrust-stages", stages, []tableColumn{
+			{Key: "stage_name", Label: "Stage Name"},
+			{Key: "category", Label: "Category"},
+			{Key: "scope", Label: "Scope"},
+			{Key: "project_key", Label: "Project (if scoped)"},
+			{Key: "gates", Label: "Gates"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Evidence
+	if len(snap.AppTrustEvidence) > 0 {
+		evidence := make([]interface{}, len(snap.AppTrustEvidence))
+		for i, e := range snap.AppTrustEvidence {
+			evidence[i] = struct {
+				Name              string `json:"name"`
+				Repository        string `json:"repository"`
+				PredicateCategory string `json:"predicate_category"`
+				PredicateType     string `json:"predicate_type"`
+				Stage             string `json:"stage"`
+				Verified          string `json:"verified"`
+				CreatedBy         string `json:"created_by"`
+			}{
+				Name:              orDash(e.Name),
+				Repository:        orDash(e.Repository),
+				PredicateCategory: orDash(e.PredicateCategory),
+				PredicateType:     orDash(e.PredicateType),
+				Stage:             orDash(e.Stage),
+				Verified:          yesNo(e.Verified),
+				CreatedBy:         orDash(e.CreatedBy),
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Evidence (%d)</h2>", len(evidence)))
+		tableHTML, err := renderGenericTable("apptrust-evidence", evidence, []tableColumn{
+			{Key: "name", Label: "Evidence Name"},
+			{Key: "repository", Label: "Repository"},
+			{Key: "predicate_category", Label: "Predicate Category"},
+			{Key: "predicate_type", Label: "Predicate Type"},
+			{Key: "stage", Label: "Stage"},
+			{Key: "verified", Label: "Verified"},
+			{Key: "created_by", Label: "Created By"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Release Bundles (v2 names)
+	if len(snap.AppTrustReleaseBundles) > 0 {
+		bundles := make([]interface{}, len(snap.AppTrustReleaseBundles))
+		for i, rb := range snap.AppTrustReleaseBundles {
+			bundles[i] = struct {
+				ReleaseBundleName string `json:"release_bundle_name"`
+				RepositoryKey     string `json:"repository_key"`
+				ProjectKey        string `json:"project_key"`
+				ProjectName       string `json:"project_name"`
+			}{
+				ReleaseBundleName: rb.ReleaseBundleName,
+				RepositoryKey:     rb.RepositoryKey,
+				ProjectKey:        orDash(rb.ProjectKey),
+				ProjectName:       orDash(rb.ProjectName),
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Release Bundles (%d)</h2>", len(bundles)))
+		tableHTML, err := renderGenericTable("apptrust-bundles", bundles, []tableColumn{
+			{Key: "release_bundle_name", Label: "Bundle Name"},
+			{Key: "repository_key", Label: "Repository"},
+			{Key: "project_key", Label: "Project Key"},
+			{Key: "project_name", Label: "Project Name"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Application → Policy relationships (with scope mechanism)
+	if len(snap.AppTrustApplicationPolicies) > 0 {
+		appPolicies := make([]interface{}, len(snap.AppTrustApplicationPolicies))
+		for i, ap := range snap.AppTrustApplicationPolicies {
+			appPolicies[i] = struct {
+				ApplicationName string `json:"application_name"`
+				ApplicationKey  string `json:"application_key"`
+				ProjectKey      string `json:"project_key"`
+				PolicyName      string `json:"policy_name"`
+				ScopeType       string `json:"scope_type"`
+				ScopeMechanism  string `json:"scope_mechanism"`
+				PolicyMode      string `json:"policy_mode"`
+				PolicyEnabled   string `json:"policy_enabled"`
+			}{
+				ApplicationName: ap.ApplicationName,
+				ApplicationKey:  ap.ApplicationKey,
+				ProjectKey:      orDash(ap.ProjectKey),
+				PolicyName:      ap.PolicyName,
+				ScopeType:       ap.ScopeType,
+				ScopeMechanism:  orDash(ap.ScopeMechanism),
+				PolicyMode:      orDash(ap.PolicyMode),
+				PolicyEnabled:   yesNo(ap.PolicyEnabled),
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Application → Policy Links (%d)</h2>", len(appPolicies)))
+		tableHTML, err := renderGenericTable("apptrust-app-policies", appPolicies, []tableColumn{
+			{Key: "application_name", Label: "Application"},
+			{Key: "application_key", Label: "App Key"},
+			{Key: "project_key", Label: "Project"},
+			{Key: "policy_name", Label: "Policy"},
+			{Key: "scope_type", Label: "Scope Type"},
+			{Key: "scope_mechanism", Label: "Scope Mechanism"},
+			{Key: "policy_mode", Label: "Mode"},
+			{Key: "policy_enabled", Label: "Enabled"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	// Policy → Rule relationships (with template info)
+	if len(snap.AppTrustPolicyRules) > 0 {
+		policyRules := make([]interface{}, len(snap.AppTrustPolicyRules))
+		for i, pr := range snap.AppTrustPolicyRules {
+			policyRules[i] = struct {
+				PolicyName   string `json:"policy_name"`
+				PolicyID     string `json:"policy_id"`
+				RuleName     string `json:"rule_name"`
+				RuleID       string `json:"rule_id"`
+				RuleOrder    string `json:"rule_order"`
+				TemplateName string `json:"template_name"`
+				TemplateID   string `json:"template_id"`
+			}{
+				PolicyName:   pr.PolicyName,
+				PolicyID:     pr.PolicyID,
+				RuleName:     pr.RuleName,
+				RuleID:       pr.RuleID,
+				RuleOrder:    strconv.Itoa(pr.RuleOrder),
+				TemplateName: orDash(pr.TemplateName),
+				TemplateID:   orDash(pr.TemplateID),
+			}
+		}
+		b.WriteString(fmt.Sprintf("<h2>AppTrust Policy → Rule Links (%d)</h2>", len(policyRules)))
+		tableHTML, err := renderGenericTable("apptrust-policy-rules", policyRules, []tableColumn{
+			{Key: "policy_name", Label: "Policy"},
+			{Key: "policy_id", Label: "Policy ID"},
+			{Key: "rule_name", Label: "Rule"},
+			{Key: "rule_id", Label: "Rule ID"},
+			{Key: "rule_order", Label: "Order"},
+			{Key: "template_name", Label: "Template"},
+			{Key: "template_id", Label: "Template ID"},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(tableHTML)
+	}
+
+	return b.String(), nil
 }
 
 func orDash(s string) string {

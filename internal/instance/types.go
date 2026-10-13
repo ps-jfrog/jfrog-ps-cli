@@ -446,6 +446,165 @@ type XrayConfig struct {
 	Settings          *XraySettings        `json:"settings,omitempty"`
 }
 
+// AppTrustApplicationLabel is a key:value label attached to an AppTrust application.
+type AppTrustApplicationLabel struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// AppTrustApplication is one application from GET /apptrust/api/v1/applications
+// (response wraps the list in an "applications" array).
+type AppTrustApplication struct {
+	ApplicationKey  string                     `json:"application_key"`
+	ApplicationName string                     `json:"application_name"`
+	ProjectKey      string                     `json:"project_key,omitempty"`
+	Description     string                     `json:"description,omitempty"`
+	Criticality     string                     `json:"criticality,omitempty"` // unspecified|low|medium|high|critical
+	MaturityLevel   string                     `json:"maturity_level,omitempty"` // unspecified|experimental|production|end_of_life
+	UserOwners      []string                   `json:"user_owners,omitempty"`
+	GroupOwners     []string                   `json:"group_owners,omitempty"`
+	Labels          []AppTrustApplicationLabel `json:"labels,omitempty"`
+}
+
+// AppTrustPolicyScope defines which projects/applications a policy targets.
+type AppTrustPolicyScope struct {
+	ScopeType           string   `json:"scope_type,omitempty"` // global|project|application
+	ProjectKeys         []string `json:"project_keys,omitempty"`
+	ApplicationKeys     []string `json:"application_keys,omitempty"`
+	ApplicationLabels   []string `json:"application_labels,omitempty"`
+	ApplicationVersions []string `json:"application_versions,omitempty"`
+}
+
+// AppTrustPolicy is one policy from GET /unifiedpolicy/api/v1/policies
+// (response wraps the list in an "items" array). Part of the JFrog Unified
+// Policy Service, shared by AppTrust and Xray/Curation governance.
+type AppTrustPolicy struct {
+	ID                  string                 `json:"id"`
+	Name                string                 `json:"name"`
+	Description         string                 `json:"description,omitempty"`
+	Enabled             bool                   `json:"enabled"`
+	Mode                string                 `json:"mode,omitempty"` // block|warning
+	Scope               AppTrustPolicyScope    `json:"scope,omitempty"`
+	ActionType          string                 `json:"action_type,omitempty"`
+	StageKey            string                 `json:"stage_key,omitempty"`
+	StageGate           string                 `json:"stage_gate,omitempty"` // entry|exit|release
+	RuleIDs             []string               `json:"rule_ids,omitempty"`
+	WaiverRequestConfig string                 `json:"waiver_request_config,omitempty"` // forbidden|manual|auto_approved
+	CreatedAt           string                 `json:"created_at,omitempty"`
+	CreatedBy           string                 `json:"created_by,omitempty"`
+	UpdatedAt           string                 `json:"updated_at,omitempty"`
+	UpdatedBy           string                 `json:"updated_by,omitempty"`
+}
+
+// AppTrustRule is one rule from GET /unifiedpolicy/api/v1/rules
+// (response wraps the list in an "items" array).
+type AppTrustRule struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	TemplateID  string `json:"template_id,omitempty"`
+	IsCustom    bool   `json:"is_custom"`
+	CreatedAt   string `json:"created_at,omitempty"`
+	CreatedBy   string `json:"created_by,omitempty"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+	UpdatedBy   string `json:"updated_by,omitempty"`
+}
+
+// AppTrustTemplate is one template from GET /unifiedpolicy/api/v1/templates
+// (response wraps the list in an "items" array) - the rule type/logic a Rule
+// instantiates (e.g. a CVSS-threshold check backed by a rego policy).
+type AppTrustTemplate struct {
+	ID             string   `json:"id"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	Version        string   `json:"version,omitempty"`
+	Category       string   `json:"category,omitempty"` // security|legal|operational|quality|audit|workflow
+	Scanners       []string `json:"scanners,omitempty"`
+	DataSourceType string   `json:"data_source_type,omitempty"`
+	IsCustom       bool     `json:"is_custom"`
+	CreatedAt      string   `json:"created_at,omitempty"`
+	CreatedBy      string   `json:"created_by,omitempty"`
+}
+
+// AppTrustGateInfo is one gate within a lifecycle stage, with the count of
+// policies attached to it (from the lifecycle/stages endpoint's gates_info).
+type AppTrustGateInfo struct {
+	Name          string `json:"name"`
+	PoliciesCount int    `json:"policies_count"`
+}
+
+// AppTrustStage is one lifecycle stage for a project, from
+// GET /apptrust/api/v1/projects/{project_key}/lifecycle/stages. ProjectKey is
+// filled in by the caller (the endpoint is per-project, not a global list).
+type AppTrustStage struct {
+	ProjectKey string             `json:"project_key"`
+	Category   string             `json:"category,omitempty"` // none|code|promote|release
+	StageName  string             `json:"stage_name"`
+	Scope      string             `json:"scope,omitempty"` // global|project
+	Gates      []string           `json:"gates,omitempty"`
+	GatesInfo  []AppTrustGateInfo `json:"gates_info,omitempty"`
+}
+
+// AppTrustEvidence is one evidence record from GET /evidence/api/v1/evidence-search
+// (response wraps the list in an "evidence" array) - DSSE/in-toto attestations
+// attached to a build, package, or release bundle.
+type AppTrustEvidence struct {
+	ID                 string `json:"id"`
+	Repository         string `json:"repository,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Name               string `json:"name,omitempty"`
+	PredicateCategory  string `json:"predicate_category,omitempty"`
+	PredicateType      string `json:"predicate_type,omitempty"`
+	PredicateSlug      string `json:"predicate_slug,omitempty"`
+	CreatedAt          string `json:"created_at,omitempty"`
+	CreatedBy          string `json:"created_by,omitempty"`
+	Verified           bool   `json:"verified,omitempty"`
+	Stage              string `json:"stage,omitempty"`
+}
+
+// AppTrustReleaseBundle is one Release Bundle v2 name/repo pairing from
+// GET /lifecycle/api/v2/release_bundle/names (response wraps the list in a
+// "release_bundles" array) - the name itself, not a specific version.
+type AppTrustReleaseBundle struct {
+	RepositoryKey     string `json:"repository_key"`
+	ReleaseBundleName string `json:"release_bundle_name"`
+	ProjectKey        string `json:"project_key,omitempty"`
+	ProjectName       string `json:"project_name,omitempty"`
+}
+
+// AppTrustApplicationPolicy is a junction showing which applications a
+// policy targets (and the scope mechanism: project, application key, or label).
+type AppTrustApplicationPolicy struct {
+	ApplicationKey string `json:"application_key"`
+	ApplicationName string `json:"application_name"`
+	ProjectKey     string `json:"project_key,omitempty"`
+	PolicyID       string `json:"policy_id"`
+	PolicyName     string `json:"policy_name"`
+	ScopeType      string `json:"scope_type"` // how is this app targeted: global|project|application|label
+	ScopeMechanism string `json:"scope_mechanism,omitempty"` // which project_key/app_key/label matched
+	PolicyMode     string `json:"policy_mode,omitempty"` // block|warning
+	PolicyEnabled  bool   `json:"policy_enabled"`
+}
+
+// AppTrustPolicyRule is a junction showing which rules implement which policies.
+type AppTrustPolicyRule struct {
+	PolicyID    string `json:"policy_id"`
+	PolicyName  string `json:"policy_name"`
+	RuleID      string `json:"rule_id"`
+	RuleName    string `json:"rule_name"`
+	RuleOrder   int    `json:"rule_order,omitempty"` // position in policy's rule list
+	TemplateID  string `json:"template_id,omitempty"`
+	TemplateName string `json:"template_name,omitempty"`
+}
+
+// ProjectRepository represents a project-to-repo mapping
+type ProjectRepository struct {
+	ProjectKey string `json:"project_key"`
+	RepoKey    string `json:"repo_key"`
+	PackageType string `json:"package_type,omitempty"`
+	RepoType   string `json:"repo_type,omitempty"`
+}
+
 // Snapshot is the full instance-wide discovery result, written/read as one
 // JSON file by internal/discover's "discover instance" and consumed by
 // "discover analyze --instance".
@@ -474,6 +633,17 @@ type Snapshot struct {
 
 	Replications   []ReplicationConfig `json:"replications,omitempty"`
 	FederatedRepos []FederatedRepo     `json:"federated_repos,omitempty"`
+
+	AppTrustPolicies          []AppTrustPolicy           `json:"apptrust_policies,omitempty"`
+	AppTrustApplications      []AppTrustApplication      `json:"apptrust_applications,omitempty"`
+	AppTrustRules             []AppTrustRule             `json:"apptrust_rules,omitempty"`
+	AppTrustTemplates         []AppTrustTemplate         `json:"apptrust_templates,omitempty"`
+	AppTrustStages            []AppTrustStage            `json:"apptrust_stages,omitempty"`
+	AppTrustEvidence          []AppTrustEvidence         `json:"apptrust_evidence,omitempty"`
+	AppTrustReleaseBundles    []AppTrustReleaseBundle    `json:"apptrust_release_bundles,omitempty"`
+	AppTrustApplicationPolicies []AppTrustApplicationPolicy `json:"apptrust_application_policies,omitempty"`
+	AppTrustPolicyRules       []AppTrustPolicyRule       `json:"apptrust_policy_rules,omitempty"`
+	ProjectRepos              []ProjectRepository        `json:"project_repos,omitempty"`
 
 	Platform PlatformConfig `json:"platform"`
 	Xray     XrayConfig     `json:"xray"`
