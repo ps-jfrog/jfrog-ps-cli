@@ -94,6 +94,8 @@ func Run(args []string) int {
 	hugeGB := fs.Float64("huge-gb", analyze.DefaultOptions().HugeGB, "--analyze: flag repos using more than this many GB")
 	massiveFiles := fs.Int("massive-files", analyze.DefaultOptions().MassiveFiles, "--analyze: flag repos with more than this many files")
 	longNameChars := fs.Int("long-name-chars", analyze.DefaultOptions().LongNameChars, "--analyze: flag repo keys longer than this many characters")
+	splitByProject := fs.Bool("split-by-project", false, "--analyze: generate separate HTML reports per project instead of one mega-report (much faster for large inventories)")
+	pageSize := fs.Int("page-size", 100, "--analyze: rows per page in paginated tables (0 = no pagination, show all)")
 
 	if err := fs.Parse(args); err != nil {
 		return 1
@@ -275,7 +277,7 @@ func Run(args []string) int {
 
 	analyzeCode := 0
 	if *doAnalyze {
-		analyzeCode = doAnalyzeReport(*reposCSV, *instanceJSON, *auditHTML, *staleDays, *hugeGB, *massiveFiles, *longNameChars)
+		analyzeCode = doAnalyzeReport(*reposCSV, *instanceJSON, *auditHTML, *staleDays, *hugeGB, *massiveFiles, *longNameChars, *splitByProject, *pageSize)
 	}
 
 	if *doCrossEnvAnalyze {
@@ -622,7 +624,7 @@ func doAccessCSVs(client *jfclient.Client, csvPathPattern string, concurrency in
 // analyze
 // ---------------------------------------------------------------------------
 
-func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays int, hugeGB float64, massiveFiles, longNameChars int) int {
+func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays int, hugeGB float64, massiveFiles, longNameChars int, splitByProject bool, pageSize int) int {
 	// Both inputs are optional independently of each other: a repos-only run
 	// renders the single-panel Repos report, an instance-only run (e.g.
 	// "discover --instance" without "--repos") renders the instance tabs
@@ -671,34 +673,60 @@ func doAnalyzeReport(reposCSV, instanceJSONPath, outputPath string, staleDays in
 	if !reposFound {
 		sourceFile = instanceJSONPath
 	}
+
+	// Determine output directory for split-by-project mode
+	outputDirForSplit := ""
+	if splitByProject {
+		outputDirForSplit = filepath.Dir(outputPath)
+	}
+
 	html, err := analyze.Render(header, rows, analyze.RenderOptions{
-		SourceFile:  sourceFile,
-		Opts:        opts,
-		GeneratedAt: now,
-		Instance:    snap,
+		SourceFile:     sourceFile,
+		Opts:           opts,
+		GeneratedAt:    now,
+		Instance:       snap,
+		SplitByProject: splitByProject,
+		OutputDir:      outputDirForSplit,
+		PageSize:       pageSize,
 	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	if err := ensureParentDir(outputPath); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
-	if err := os.WriteFile(outputPath, []byte(html), 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		return 1
-	}
 
-	suffix := ""
-	switch {
-	case snap == nil:
-		suffix = fmt.Sprintf(" (no %s found - repos-only report; run --instance to add Overview/Access/Projects/Federation tabs)", instanceJSONPath)
-	case !reposFound:
-		suffix = fmt.Sprintf(" (no %s found - instance-only report; run --repos to add per-repo storage/activity data)", reposCSV)
+	// If split by project, html is the index file; write it to the output directory
+	if splitByProject {
+		indexPath := filepath.Join(outputDirForSplit, "index.html")
+		if err := ensureParentDir(indexPath); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		if err := os.WriteFile(indexPath, []byte(html), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "Wrote project reports to %s (%d repos analyzed across multiple project files)\n", indexPath, len(rows))
+		printNextSteps(fmt.Sprintf("open %s in a browser to explore the reports", indexPath))
+	} else {
+		if err := ensureParentDir(outputPath); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+		if err := os.WriteFile(outputPath, []byte(html), 0o644); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			return 1
+		}
+
+		suffix := ""
+		switch {
+		case snap == nil:
+			suffix = fmt.Sprintf(" (no %s found - repos-only report; run --instance to add Overview/Access/Projects/Federation tabs)", instanceJSONPath)
+		case !reposFound:
+			suffix = fmt.Sprintf(" (no %s found - instance-only report; run --repos to add per-repo storage/activity data)", reposCSV)
+		}
+		fmt.Fprintf(os.Stderr, "Wrote %s (%d repos analyzed)%s\n", outputPath, len(rows), suffix)
+		printNextSteps(fmt.Sprintf("open %s in a browser to explore the report", outputPath))
 	}
-	fmt.Fprintf(os.Stderr, "Wrote %s (%d repos analyzed)%s\n", outputPath, len(rows), suffix)
-	printNextSteps(fmt.Sprintf("open %s in a browser to explore the report", outputPath))
 	return 0
 }
 

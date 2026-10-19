@@ -474,6 +474,13 @@ func writeReport(filePath string, report map[string]interface{}) error {
 		return err
 	}
 
+	// Generate HTML report
+	htmlPath := strings.TrimSuffix(filePath, filepath.Ext(filePath)) + ".html"
+	htmlReport := generateHTMLReport(envs, duplicates, projectRepos, projectRoles)
+	if err := os.WriteFile(htmlPath, []byte(htmlReport), 0644); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -507,4 +514,280 @@ func getEnvNames(envs []EnvironmentData) []string {
 		names = append(names, env.Name)
 	}
 	return names
+}
+
+func generateHTMLReport(envs []EnvironmentData, duplicates []*DuplicateRepo, projectRepos map[string][]RepoRecord, projectRoles map[string][]ProjectRoleData) string {
+	totalRepos := 0
+	for _, env := range envs {
+		totalRepos += len(env.Repos)
+	}
+
+	html := `<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Cross-Environment Discovery Analysis</title>
+	<style>
+		* { margin: 0; padding: 0; box-sizing: border-box; }
+		body {
+			font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			min-height: 100vh;
+			padding: 20px;
+		}
+		.container { max-width: 1400px; margin: 0 auto; }
+		.header {
+			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			color: white;
+			padding: 40px 20px;
+			border-radius: 8px 8px 0 0;
+			text-align: center;
+		}
+		.header h1 { font-size: 2.5em; margin-bottom: 10px; }
+		.header p { font-size: 1.1em; opacity: 0.9; }
+		.content {
+			background: white;
+			border-radius: 0 0 8px 8px;
+			padding: 40px;
+			box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+		}
+		.stats-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+			gap: 20px;
+			margin-bottom: 40px;
+		}
+		.stat-card {
+			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			color: white;
+			padding: 20px;
+			border-radius: 8px;
+			text-align: center;
+		}
+		.stat-card .value { font-size: 2.5em; font-weight: bold; margin-bottom: 10px; }
+		.stat-card .label { font-size: 0.95em; opacity: 0.9; }
+		.section { margin-bottom: 40px; }
+		.section h2 {
+			font-size: 1.8em;
+			color: #333;
+			margin-bottom: 20px;
+			border-bottom: 2px solid #667eea;
+			padding-bottom: 10px;
+		}
+		.env-grid {
+			display: grid;
+			grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+			gap: 20px;
+			margin-bottom: 30px;
+		}
+		.env-card {
+			border: 1px solid #ddd;
+			border-radius: 8px;
+			padding: 20px;
+			background: #f9f9f9;
+		}
+		.env-card h3 { color: #667eea; margin-bottom: 15px; }
+		.env-card p { margin: 8px 0; color: #555; }
+		.project-group {
+			background: #f9f9f9;
+			border-left: 4px solid #667eea;
+			padding: 15px;
+			margin-bottom: 15px;
+			border-radius: 4px;
+		}
+		.project-group h3 { color: #667eea; margin-bottom: 10px; }
+		.repo-list, .role-list {
+			list-style: none;
+			margin-left: 20px;
+		}
+		.repo-item, .role-item {
+			padding: 8px 0;
+			color: #555;
+			border-bottom: 1px solid #eee;
+		}
+		.repo-item:last-child, .role-item:last-child {
+			border-bottom: none;
+		}
+		.repo-details {
+			font-size: 0.9em;
+			color: #888;
+			margin-top: 4px;
+		}
+		.role-details {
+			font-size: 0.9em;
+			color: #888;
+			margin-top: 4px;
+		}
+		.duplicate-warning {
+			background: #fff3cd;
+			border-left: 4px solid #ffc107;
+			padding: 15px;
+			margin-bottom: 15px;
+			border-radius: 4px;
+		}
+		.no-duplicates {
+			text-align: center;
+			color: #28a745;
+			font-weight: bold;
+			padding: 20px;
+		}
+		.generated-at {
+			text-align: center;
+			color: #888;
+			font-size: 0.9em;
+			margin-top: 30px;
+			padding-top: 20px;
+			border-top: 1px solid #ddd;
+		}
+	</style>
+</head>
+<body>
+	<div class="container">
+		<div class="header">
+			<h1>Cross-Environment Discovery Analysis</h1>
+			<p>Interactive report generated on ` + time.Now().Format(time.RFC3339) + `</p>
+		</div>
+		<div class="content">
+			<div class="section">
+				<h2>Summary Statistics</h2>
+				<div class="stats-grid">
+					<div class="stat-card">
+						<div class="value">` + fmt.Sprintf("%d", len(envs)) + `</div>
+						<div class="label">Environments</div>
+					</div>
+					<div class="stat-card">
+						<div class="value">` + fmt.Sprintf("%d", totalRepos) + `</div>
+						<div class="label">Total Repositories</div>
+					</div>
+					<div class="stat-card">
+						<div class="value">` + fmt.Sprintf("%d", len(duplicates)) + `</div>
+						<div class="label">Duplicate Repos</div>
+					</div>
+					<div class="stat-card">
+						<div class="value">` + fmt.Sprintf("%d", len(projectRepos)) + `</div>
+						<div class="label">Projects</div>
+					</div>
+				</div>
+			</div>
+
+			<div class="section">
+				<h2>Environment Breakdown</h2>
+				<div class="env-grid">
+`
+
+	for _, env := range envs {
+		html += `				<div class="env-card">
+					<h3>` + env.Name + `</h3>
+					<p><strong>Repositories:</strong> ` + fmt.Sprintf("%d", len(env.Repos)) + `</p>`
+		if env.Instance != nil {
+			html += `<p><strong>Users:</strong> ` + fmt.Sprintf("%d", len(env.Instance.Users)) + `</p>
+					<p><strong>Groups:</strong> ` + fmt.Sprintf("%d", len(env.Instance.Groups)) + `</p>
+					<p><strong>Projects:</strong> ` + fmt.Sprintf("%d", len(env.Instance.Projects)) + `</p>`
+		}
+		html += `			</div>
+`
+	}
+
+	html += `			</div>
+		</div>
+
+		<div class="section">
+			<h2>Duplicate Repositories</h2>
+`
+
+	if len(duplicates) == 0 {
+		html += `			<div class="no-duplicates">✓ No duplicate repositories found</div>
+`
+	} else {
+		for i, dup := range duplicates {
+			html += `			<div class="duplicate-warning">
+				<strong>[` + fmt.Sprintf("%d", i+1) + `] ` + dup.Name + `</strong>
+				<p>Found in: ` + strings.Join(dup.Environments, ", ") + `</p>
+			</div>
+`
+		}
+	}
+
+	html += `		</div>
+
+		<div class="section">
+			<h2>Project Repositories</h2>
+`
+
+	// Sort project keys
+	var projectKeys []string
+	for pk := range projectRepos {
+		projectKeys = append(projectKeys, pk)
+	}
+	sort.Strings(projectKeys)
+
+	for _, projectKey := range projectKeys {
+		repos := projectRepos[projectKey]
+		html += `			<div class="project-group">
+				<h3>` + projectKey + ` (` + fmt.Sprintf("%d", len(repos)) + ` repositories)</h3>
+				<ul class="repo-list">
+`
+		for _, repo := range repos {
+			html += `					<li class="repo-item">
+						<strong>` + repo.Name + `</strong>
+						<div class="repo-details">
+							Type: ` + repo.PackageType + ` / ` + repo.RepoType + ` |
+							Size: ` + repo.FilesCount + ` files | ` + repo.UsageGB + ` GB
+						</div>
+					</li>
+`
+		}
+		html += `				</ul>
+			</div>
+`
+	}
+
+	html += `		</div>
+
+		<div class="section">
+			<h2>Project Roles</h2>
+`
+
+	// Sort project keys for roles
+	var roleProjectKeys []string
+	for pk := range projectRoles {
+		roleProjectKeys = append(roleProjectKeys, pk)
+	}
+	sort.Strings(roleProjectKeys)
+
+	for _, projectKey := range roleProjectKeys {
+		roles := projectRoles[projectKey]
+		html += `			<div class="project-group">
+				<h3>` + projectKey + ` (` + fmt.Sprintf("%d", len(roles)) + ` roles)</h3>
+				<ul class="role-list">
+`
+		for _, role := range roles {
+			html += `					<li class="role-item">
+						<strong>` + role.Name + `</strong>
+						<div class="role-details">
+							Type: ` + role.Type
+			if len(role.Environments) > 0 {
+				html += ` | Environments: ` + strings.Join(role.Environments, ", ")
+			}
+			html += `
+						</div>
+					</li>
+`
+		}
+		html += `				</ul>
+			</div>
+`
+	}
+
+	html += `		</div>
+
+		<div class="generated-at">
+			Generated on ` + time.Now().Format("2006-01-02 15:04:05") + ` | JFrog PS CLI Discovery Analysis
+		</div>
+	</div>
+</body>
+</html>`
+
+	return html
 }
