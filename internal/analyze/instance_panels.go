@@ -751,14 +751,75 @@ func componentStatCard(name string, available bool, version string) string {
 	return fmt.Sprintf(`<div class="stat"><strong>%s</strong><span>%s</span></div>`, htmlEscape(orDash(version)), htmlEscape(name))
 }
 
-// renderProjectRolesPanel displays all project roles in a table
+// renderProjectRolesPanel displays all project roles grouped by project
 func renderProjectRolesPanel(snap *instance.Snapshot) (string, error) {
 	var b strings.Builder
 
-	roles := make([]interface{}, 0, len(snap.Projects)*3)
+	// Group roles by project
+	type groupedRoles struct {
+		ProjectKey  string
+		DisplayName string
+		Roles       []struct {
+			Name         string `json:"name"`
+			Type         string `json:"type"`
+			Environments string `json:"environments"`
+			Actions      string `json:"actions"`
+		}
+	}
+
+	var projectGroups []groupedRoles
 	for _, p := range snap.Projects {
+		if len(p.Roles) == 0 {
+			continue
+		}
+
+		var rolesData []struct {
+			Name         string `json:"name"`
+			Type         string `json:"type"`
+			Environments string `json:"environments"`
+			Actions      string `json:"actions"`
+		}
+
 		for _, role := range p.Roles {
-			roles = append(roles, struct {
+			rolesData = append(rolesData, struct {
+				Name         string `json:"name"`
+				Type         string `json:"type"`
+				Environments string `json:"environments"`
+				Actions      string `json:"actions"`
+			}{
+				Name:         role.Name,
+				Type:         role.Type,
+				Environments: strings.Join(role.Environments, ", "),
+				Actions:      strings.Join(role.Actions, ", "),
+			})
+		}
+
+		projectGroups = append(projectGroups, groupedRoles{
+			ProjectKey:  p.Key,
+			DisplayName: p.DisplayName,
+			Roles:       rolesData,
+		})
+	}
+
+	if len(projectGroups) == 0 {
+		b.WriteString(`<div class="callout info"><strong>No project roles found.</strong></div>`)
+		return b.String(), nil
+	}
+
+	// Count total roles
+	totalRoles := 0
+	for _, pg := range projectGroups {
+		totalRoles += len(pg.Roles)
+	}
+
+	b.WriteString(fmt.Sprintf("<h2>Project Roles (%d)</h2>", totalRoles))
+	b.WriteString(`<p>Roles grouped by project - use the search box to filter by project key, role name, or type.</p>`)
+
+	// Render as grouped table data
+	allRoles := make([]interface{}, 0)
+	for _, pg := range projectGroups {
+		for _, role := range pg.Roles {
+			allRoles = append(allRoles, struct {
 				ProjectKey   string `json:"project_key"`
 				DisplayName  string `json:"display_name"`
 				Name         string `json:"name"`
@@ -766,23 +827,17 @@ func renderProjectRolesPanel(snap *instance.Snapshot) (string, error) {
 				Environments string `json:"environments"`
 				Actions      string `json:"actions"`
 			}{
-				ProjectKey:   p.Key,
-				DisplayName:  p.DisplayName,
+				ProjectKey:   pg.ProjectKey,
+				DisplayName:  pg.DisplayName,
 				Name:         role.Name,
 				Type:         role.Type,
-				Environments: strings.Join(role.Environments, ", "),
-				Actions:      strings.Join(role.Actions, ", "),
+				Environments: role.Environments,
+				Actions:      role.Actions,
 			})
 		}
 	}
 
-	if len(roles) == 0 {
-		b.WriteString(`<div class="callout info"><strong>No project roles found.</strong></div>`)
-		return b.String(), nil
-	}
-
-	b.WriteString(fmt.Sprintf("<h2>Project Roles (%d)</h2>", len(roles)))
-	tableHTML, err := renderGenericTable("project-roles", roles, []tableColumn{
+	tableHTML, err := renderGenericTable("project-roles", allRoles, []tableColumn{
 		{Key: "project_key", Label: "Project"},
 		{Key: "display_name", Label: "Display Name"},
 		{Key: "name", Label: "Role Name"},
@@ -797,31 +852,60 @@ func renderProjectRolesPanel(snap *instance.Snapshot) (string, error) {
 	return b.String(), nil
 }
 
-// renderProjectRepositoriesPanel displays all project-repository mappings in a table
+// renderProjectRepositoriesPanel displays all project-repository mappings grouped by project
 func renderProjectRepositoriesPanel(snap *instance.Snapshot) (string, error) {
 	var b strings.Builder
 
-	mappings := make([]interface{}, 0)
+	// Group repositories by project
+	type groupedRepos struct {
+		ProjectKey  string
+		DisplayName string
+		Repos       []string
+	}
+
+	var projectGroups []groupedRepos
 	for _, p := range snap.Projects {
-		for _, repoKey := range p.Repos {
+		if len(p.Repos) == 0 {
+			continue
+		}
+
+		projectGroups = append(projectGroups, groupedRepos{
+			ProjectKey:  p.Key,
+			DisplayName: p.DisplayName,
+			Repos:       p.Repos,
+		})
+	}
+
+	if len(projectGroups) == 0 {
+		b.WriteString(`<div class="callout info"><strong>No project-repository mappings found.</strong></div>`)
+		return b.String(), nil
+	}
+
+	// Count total repos
+	totalRepos := 0
+	for _, pg := range projectGroups {
+		totalRepos += len(pg.Repos)
+	}
+
+	b.WriteString(fmt.Sprintf("<h2>Project Repositories (%d)</h2>", totalRepos))
+	b.WriteString(`<p>Repositories grouped by project - use the search box to filter by project key or repository name.</p>`)
+
+	// Render as grouped table data
+	mappings := make([]interface{}, 0)
+	for _, pg := range projectGroups {
+		for _, repoKey := range pg.Repos {
 			mappings = append(mappings, struct {
 				ProjectKey  string `json:"project_key"`
 				DisplayName string `json:"display_name"`
 				RepoKey     string `json:"repo_key"`
 			}{
-				ProjectKey:  p.Key,
-				DisplayName: p.DisplayName,
+				ProjectKey:  pg.ProjectKey,
+				DisplayName: pg.DisplayName,
 				RepoKey:     repoKey,
 			})
 		}
 	}
 
-	if len(mappings) == 0 {
-		b.WriteString(`<div class="callout info"><strong>No project-repository mappings found.</strong></div>`)
-		return b.String(), nil
-	}
-
-	b.WriteString(fmt.Sprintf("<h2>Project Repositories (%d)</h2>", len(mappings)))
 	tableHTML, err := renderGenericTable("project-repos", mappings, []tableColumn{
 		{Key: "project_key", Label: "Project Key"},
 		{Key: "display_name", Label: "Project Name"},
