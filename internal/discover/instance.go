@@ -26,10 +26,12 @@ type CollectOptions struct {
 	Progress func(stage string, done, total int)
 }
 
-// DefaultCollectOptions returns sane defaults: modest concurrency, and caps
-// high enough to cover most PS-scale instances without silently truncating.
+// DefaultCollectOptions returns sane defaults: modest concurrency and no
+// caps on users/groups/permission targets (0 = unlimited) - every instance,
+// however large, is collected in full. Set CollectOptions.Max* directly if
+// a caller needs to bound collection on an exceptionally large instance.
 func DefaultCollectOptions() CollectOptions {
-	return CollectOptions{Concurrency: 8, MaxUsers: 5000, MaxGroups: 5000, MaxPermissions: 2000, ProjectDetail: true}
+	return CollectOptions{Concurrency: 8, MaxUsers: 0, MaxGroups: 0, MaxPermissions: 0, ProjectDetail: true}
 }
 
 // CollectInstance gathers a full instance.Snapshot: component versions,

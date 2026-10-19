@@ -4,6 +4,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"io"
+	"sort"
 	"strconv"
 
 	"jfrogpscli/internal/instance"
@@ -361,4 +362,78 @@ func WriteAppTrustPolicyRulesCSV(w io.Writer, links []instance.AppTrustPolicyRul
 	}
 	cw.Flush()
 	return cw.Error()
+}
+
+// WriteUsersCSV writes users to CSV format.
+func WriteUsersCSV(w io.Writer, users []instance.User) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"username", "realm", "status"}); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+	for _, u := range users {
+		if err := cw.Write([]string{u.Username, u.Realm, u.Status}); err != nil {
+			return fmt.Errorf("write csv row for %s: %w", u.Username, err)
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// WriteGroupsCSV writes groups to CSV format.
+func WriteGroupsCSV(w io.Writer, groups []instance.Group) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"name"}); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+	for _, g := range groups {
+		if err := cw.Write([]string{g.Name}); err != nil {
+			return fmt.Errorf("write csv row for %s: %w", g.Name, err)
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// WritePermissionTargetsCSV writes permission targets to CSV format, one
+// row per target x principal (user or group) so the repos a principal was
+// granted actions on are readable directly, rather than nested inside a
+// single cell.
+func WritePermissionTargetsCSV(w io.Writer, targets []instance.PermissionTarget) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"permission_target", "repos", "principal_type", "principal", "actions"}); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+	for _, t := range targets {
+		repos := joinStrings(t.Repos)
+		if len(t.UserActions) == 0 && len(t.GroupActions) == 0 {
+			if err := cw.Write([]string{t.Name, repos, "", "", ""}); err != nil {
+				return fmt.Errorf("write csv row for %s: %w", t.Name, err)
+			}
+			continue
+		}
+		for _, user := range sortedKeys(t.UserActions) {
+			if err := cw.Write([]string{t.Name, repos, "user", user, joinStrings(t.UserActions[user])}); err != nil {
+				return fmt.Errorf("write csv row for %s: %w", t.Name, err)
+			}
+		}
+		for _, group := range sortedKeys(t.GroupActions) {
+			if err := cw.Write([]string{t.Name, repos, "group", group, joinStrings(t.GroupActions[group])}); err != nil {
+				return fmt.Errorf("write csv row for %s: %w", t.Name, err)
+			}
+		}
+	}
+	cw.Flush()
+	return cw.Error()
+}
+
+// sortedKeys returns a map's keys sorted ascending, so CSV rows derived
+// from a map come out in a stable order across runs instead of Go's
+// randomized map iteration order.
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

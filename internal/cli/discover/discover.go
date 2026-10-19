@@ -11,13 +11,14 @@
 // Rather than subcommands, one piece per invocation, "discover" takes
 // boolean flags selecting which piece(s) to run - so a single invocation
 // can fetch the repo report, the instance snapshot, and render the HTML
-// audit together. Each piece's own flags (concurrency, caps, thresholds,
-// output paths) are all registered on the same flag set.
+// audit together. Each piece's own flags (concurrency, thresholds, output
+// paths) are all registered on the same flag set.
 package discovercmd
 
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,6 +64,7 @@ func Run(args []string) int {
 	doProjectRoles := fs.Bool("project-roles", false, "List all project roles (one row per project x role) -> --project-roles-csv")
 	doProjectRepos := fs.Bool("project-repos", false, "List all project-to-repository mappings -> --project-repos-csv")
 	doAppTrust := fs.Bool("apptrust", false, "List all AppTrust applications/policies/rules/templates/stages/evidence/release-bundles -> --apptrust-csv")
+	doAccess := fs.Bool("access", false, "Fetch ALL users, groups, and permission targets directly - unbounded, and without the rest of --instance's data - -> --access-csv")
 	doAll := fs.Bool("all", false, "Shorthand for --repos --policies --instance --analyze")
 	parallel := fs.Bool("parallel", true, "Run --repos/--policies/--instance concurrently instead of sequentially when more than one is selected - faster, since they're independent network calls against the same JPD (each still gets its own live progress bar); set false to run sequentially instead")
 
@@ -76,6 +78,7 @@ func Run(args []string) int {
 	projectRolesCSV := fs.String("project-roles-csv", "", "Path for the project roles CSV (written by --project-roles) - default: <output>/<instance>/project-roles.csv")
 	projectReposCSV := fs.String("project-repos-csv", "", "Path for the project repositories CSV (written by --project-repos) - default: <output>/<instance>/project-repos.csv")
 	appTrustCSV := fs.String("apptrust-csv", "", "Path for the AppTrust CSV (written by --apptrust) - default: <output>/<instance>/apptrust.csv")
+	accessCSV := fs.String("access-csv", "", "Path pattern for the access CSVs (written by --access as <pattern>.users.csv/.groups.csv/.permissions.csv) - default: <output>/<instance>/access.csv")
 
 	// --- --repos-specific flags ---
 	concurrency := fs.Int("concurrency", 8, "Repos/permission-targets/federated-repos/projects processed concurrently (be considerate on shared instances)")
@@ -84,9 +87,6 @@ func Run(args []string) int {
 	exclude := fs.String("exclude", "", "--repos: comma-separated glob patterns - skip repos matching any of these")
 
 	// --- --instance-specific flags ---
-	maxUsers := fs.Int("max-users", discover.DefaultCollectOptions().MaxUsers, "--instance: cap on users collected (0 = unlimited)")
-	maxGroups := fs.Int("max-groups", discover.DefaultCollectOptions().MaxGroups, "--instance: cap on groups collected (0 = unlimited)")
-	maxPermissions := fs.Int("max-permissions", discover.DefaultCollectOptions().MaxPermissions, "--instance: cap on permission targets collected (0 = unlimited)")
 	projectDetail := fs.Bool("project-detail", discover.DefaultCollectOptions().ProjectDetail, "--instance: also fetch each project's roles/environments/members (2-4 extra calls per project)")
 
 	// --- --analyze-specific flags ---
@@ -103,7 +103,7 @@ func Run(args []string) int {
 		*doRepos, *doPolicies, *doInstance, *doAnalyze = true, true, true, true
 		*doProjectRoles, *doProjectRepos, *doAppTrust = true, true, true
 	}
-	if !*doRepos && !*doPolicies && !*doInstance && !*doAnalyze && !*doCrossEnvAnalyze && !*doProjectRoles && !*doProjectRepos && !*doAppTrust {
+	if !*doRepos && !*doPolicies && !*doInstance && !*doAnalyze && !*doCrossEnvAnalyze && !*doProjectRoles && !*doProjectRepos && !*doAppTrust && !*doAccess {
 		printUsage()
 		return 1
 	}
@@ -143,11 +143,14 @@ func Run(args []string) int {
 	if *appTrustCSV == "" {
 		*appTrustCSV = filepath.Join(targetDir, "apptrust.csv")
 	}
+	if *accessCSV == "" {
+		*accessCSV = filepath.Join(targetDir, "access.csv")
+	}
 
 	// Only the pieces that talk to Artifactory need a resolved client;
 	// --analyze alone makes no network calls at all.
 	var client *jfclient.Client
-	if *doRepos || *doPolicies || *doInstance {
+	if *doRepos || *doPolicies || *doInstance || *doAccess {
 		c, err := serverFlags.Resolve()
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -159,7 +162,7 @@ func Run(args []string) int {
 	// Count how many network operations we'll run
 	// Project-roles/repos/apptrust are derived from instance data, not separate calls
 	selected := 0
-	for _, on := range []bool{*doRepos, *doPolicies, *doInstance} {
+	for _, on := range []bool{*doRepos, *doPolicies, *doInstance, *doAccess} {
 		if on {
 			selected++
 		}
@@ -178,11 +181,12 @@ func Run(args []string) int {
 	}
 	runPolicies := func() int { return doPoliciesReport(client, *policiesCSV, mb, errs) }
 	runInstance := func() int {
-		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *maxUsers, *maxGroups, *maxPermissions, *projectDetail, mb, errs)
+		return doInstanceSnapshot(client, *instanceJSON, *concurrency, *projectDetail, mb, errs)
 	}
+	runAccess := func() int { return doAccessCSVs(client, *accessCSV, *concurrency, mb, errs) }
 
 	if runConcurrently {
-		mb.Log("discover: running repos/policies/instance concurrently (pass --parallel=false to run sequentially instead)")
+		mb.Log("discover: running repos/policies/instance/access concurrently (pass --parallel=false to run sequentially instead)")
 		var wg sync.WaitGroup
 		codes := make(chan int, selected)
 		launch := func(fn func() int) {
@@ -200,6 +204,9 @@ func Run(args []string) int {
 		}
 		if *doInstance {
 			launch(runInstance)
+		}
+		if *doAccess {
+			launch(runAccess)
 		}
 		wg.Wait()
 		close(codes)
@@ -221,6 +228,11 @@ func Run(args []string) int {
 		}
 		if *doInstance {
 			if code := runInstance(); code != 0 {
+				return code
+			}
+		}
+		if *doAccess {
+			if code := runAccess(); code != 0 {
 				return code
 			}
 		}
@@ -282,7 +294,7 @@ func Run(args []string) int {
 }
 
 func printUsage() {
-	fmt.Fprintln(os.Stderr, "Usage: jfps discover [--repos] [--policies] [--instance] [--project-roles] [--project-repos] [--apptrust] [--analyze] [--cross-env-analyze] [--all] [flags]")
+	fmt.Fprintln(os.Stderr, "Usage: jfps discover [--repos] [--policies] [--instance] [--project-roles] [--project-repos] [--apptrust] [--access] [--analyze] [--cross-env-analyze] [--all] [flags]")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Flags select which piece(s) to run - most operations run concurrently by default when more")
 	fmt.Fprintln(os.Stderr, "than one is selected, each with its own live progress bar (--parallel=false to run sequentially instead), and analyze")
@@ -295,13 +307,14 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  --project-roles       List all project roles (one row per project x role) -> --project-roles-csv")
 	fmt.Fprintln(os.Stderr, "  --project-repos       List all project-to-repository mappings -> --project-repos-csv")
 	fmt.Fprintln(os.Stderr, "  --apptrust            List all AppTrust applications/policies/rules/templates/stages/evidence/release-bundles -> --apptrust-csv")
+	fmt.Fprintln(os.Stderr, "  --access              Fetch ALL users, groups, and permission targets directly (unbounded, no other instance data) -> --access-csv")
 	fmt.Fprintln(os.Stderr, "  --analyze             Turn --repos-csv (+ --instance-json if present) into a self-contained interactive HTML audit -> --audit-html")
 	fmt.Fprintln(os.Stderr, "  --cross-env-analyze   Scan --output directory for multiple environment outputs and report duplicate repositories -> --cross-env-report")
 	fmt.Fprintln(os.Stderr, "  --all                 Comprehensive discovery: --repos --policies --instance --project-roles --project-repos --apptrust --analyze")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Output files land under --output (default \"output\"), in a subfolder named after the JPD's")
 	fmt.Fprintln(os.Stderr, "hostname, e.g. 'output/psazuse/report.csv' - unless --repos-csv/--policies-csv/--instance-json/")
-	fmt.Fprintln(os.Stderr, "--project-roles-csv/--project-repos-csv/--apptrust-csv override an individual path explicitly.")
+	fmt.Fprintln(os.Stderr, "--project-roles-csv/--project-repos-csv/--apptrust-csv/--access-csv override an individual path explicitly.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps discover -h' to see every flag (output paths, concurrency, caps, analyze thresholds).")
 	fmt.Fprintln(os.Stderr, "Everything here is read-only - none of it ever writes to Artifactory. --analyze and --cross-env-analyze make no network calls at all.")
@@ -353,6 +366,18 @@ func outputSubdir(rawURL string) string {
 // user passed directly.
 func ensureParentDir(path string) error {
 	return os.MkdirAll(filepath.Dir(path), 0o755)
+}
+
+// writeCSVTo creates path, calls write with the resulting file, and closes
+// it afterward - shared by every CSV-writing piece below so the
+// create/close/wrap boilerplate isn't repeated at each call site.
+func writeCSVTo(path string, write func(io.Writer) error) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return write(f)
 }
 
 // splitList splits a comma-separated flag value into a trimmed, non-empty
@@ -457,7 +482,7 @@ func doPoliciesReport(client *jfclient.Client, csvPath string, mb *progress.Bars
 // instance
 // ---------------------------------------------------------------------------
 
-func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency, maxUsers, maxGroups, maxPermissions int, projectDetail bool, mb *progress.Bars, errs *runErrors) int {
+func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency int, projectDetail bool, mb *progress.Bars, errs *runErrors) int {
 	mb.Log("discover --instance: fetching repo list (for project repo-counts and federation targets)...")
 	repos, err := discover.ListRepoStorage(client)
 	if err != nil {
@@ -474,9 +499,6 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 	// until someone remembers to wire a flag for it too.
 	collectOpts := discover.DefaultCollectOptions()
 	collectOpts.Concurrency = concurrency
-	collectOpts.MaxUsers = maxUsers
-	collectOpts.MaxGroups = maxGroups
-	collectOpts.MaxPermissions = maxPermissions
 	collectOpts.ProjectDetail = projectDetail
 	collectOpts.Progress = func(stage string, done, total int) { mb.Update(stage, done, total) }
 
@@ -492,13 +514,13 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 		mb.Logf("discover --instance: warning: %s\n", w)
 	}
 	if snap.UsersTruncated {
-		mb.Logf("discover --instance: users list truncated at --max-users=%d\n", maxUsers)
+		mb.Log("discover --instance: users list was truncated (unexpected - please report this)")
 	}
 	if snap.GroupsTruncated {
-		mb.Logf("discover --instance: groups list truncated at --max-groups=%d\n", maxGroups)
+		mb.Log("discover --instance: groups list was truncated (unexpected - please report this)")
 	}
 	if snap.PermissionsTruncated {
-		mb.Logf("discover --instance: permission targets truncated at --max-permissions=%d\n", maxPermissions)
+		mb.Log("discover --instance: permission targets list was truncated (unexpected - please report this)")
 	}
 
 	if err := ensureParentDir(outputPath); err != nil {
@@ -520,6 +542,79 @@ func doInstanceSnapshot(client *jfclient.Client, outputPath string, concurrency,
 	}
 	mb.Logf("Wrote %s (%d users, %d groups, %d permission targets, %d projects, %d replications, %d federated repos)\n",
 		outputPath, len(snap.Users), len(snap.Groups), len(snap.Permissions), len(snap.Projects), len(snap.Replications), len(snap.FederatedRepos))
+	return 0
+}
+
+// ---------------------------------------------------------------------------
+// access (all users, groups, and permission targets - unbounded, independent
+// of --instance)
+// ---------------------------------------------------------------------------
+
+func doAccessCSVs(client *jfclient.Client, csvPathPattern string, concurrency int, mb *progress.Bars, errs *runErrors) int {
+	mb.Log("discover --access: fetching all users, groups, and permission targets (unbounded)...")
+
+	sysInfo, _, err := discover.GetSystemInfo(client)
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("access: %v", err)
+		return 0
+	}
+	if err := ensureParentDir(csvPathPattern); err != nil {
+		mb.Log("error:", err)
+		errs.add("access: %v", err)
+		return 0
+	}
+
+	dir := filepath.Dir(csvPathPattern)
+	ext := filepath.Ext(csvPathPattern)
+	base := strings.TrimSuffix(filepath.Base(csvPathPattern), ext)
+	pathFor := func(resource string) string { return filepath.Join(dir, fmt.Sprintf("%s.%s%s", base, resource, ext)) }
+
+	users, _, err := discover.GetUsers(client, 0, sysInfo.ArtifactoryVersion)
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("access users: %v", err)
+	} else {
+		path := pathFor("users")
+		if err := writeCSVTo(path, func(w io.Writer) error { return discover.WriteUsersCSV(w, users) }); err != nil {
+			mb.Log("error:", err)
+			errs.add("access users: %v", err)
+		} else {
+			mb.Logf("Wrote %d user(s) to %s\n", len(users), path)
+		}
+	}
+
+	groups, _, err := discover.GetGroups(client, 0, sysInfo.ArtifactoryVersion)
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("access groups: %v", err)
+	} else {
+		path := pathFor("groups")
+		if err := writeCSVTo(path, func(w io.Writer) error { return discover.WriteGroupsCSV(w, groups) }); err != nil {
+			mb.Log("error:", err)
+			errs.add("access groups: %v", err)
+		} else {
+			mb.Logf("Wrote %d group(s) to %s\n", len(groups), path)
+		}
+	}
+
+	targets, _, warnings, err := discover.GetPermissionTargets(client, 0, concurrency, sysInfo.ArtifactoryVersion, func(done, total int) { mb.Update("Permissions", done, total) })
+	if err != nil {
+		mb.Log("error:", err)
+		errs.add("access permissions: %v", err)
+	} else {
+		for _, w := range warnings {
+			mb.Logf("discover --access: warning: %s\n", w)
+		}
+		path := pathFor("permissions")
+		if err := writeCSVTo(path, func(w io.Writer) error { return discover.WritePermissionTargetsCSV(w, targets) }); err != nil {
+			mb.Log("error:", err)
+			errs.add("access permissions: %v", err)
+		} else {
+			mb.Logf("Wrote %d permission target(s) to %s\n", len(targets), path)
+		}
+	}
+
 	return 0
 }
 
