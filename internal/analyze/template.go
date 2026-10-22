@@ -1145,6 +1145,7 @@ const DATA = __JSON_ROWS__;
 const FINDING_DEFS = __JSON_FINDINGS__;
 const PAGE_SIZE = __PAGE_SIZE__;
 const PROJECT_DATA = __JSON_PROJECT_DATA__;
+const FEDERATION_DATA = __JSON_FEDERATION_DATA__;
 
 let repoType = "";
 let packageValue = "";
@@ -1315,7 +1316,37 @@ function showDetails(row) {
     }
   }
 
-  drawer.innerHTML = "<h3>" + escapeHtml(row.repo_name) + '</h3>' + projectInfo +
+  let federationInfo = "";
+  const fedData = FEDERATION_DATA[row.repo_name];
+  if (fedData) {
+    federationInfo = '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line);">' +
+      '<h4 style="margin: 0 0 8px; font-size: 14px; color: var(--slate);">Federation Status</h4>' +
+      '<dl class="drawer-grid">' +
+      '<div><dt>Status</dt><dd>' + escapeHtml(fedData.status) + '</dd></div>' +
+      '<div><dt>Enabled Members</dt><dd>' + fedData.enabled_members + ' / ' + fedData.total_members + '</dd></div>' +
+      '</dl>';
+
+    if (fedData.members && fedData.members.length > 0) {
+      federationInfo += '<h4 style="margin: 12px 0 8px; font-size: 13px; color: var(--slate);">Federation Members</h4>' +
+        '<table style="width: 100%; font-size: 12px; border-collapse: collapse;">' +
+        '<thead><tr><th style="padding: 6px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 650;">URL</th>' +
+        '<th style="padding: 6px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 650;">Status</th></tr></thead>' +
+        '<tbody>';
+      for (const member of fedData.members) {
+        const statusBadge = member.enabled ?
+          '<span style="background: var(--green-bg); color: var(--green); padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 650;">Enabled</span>' :
+          '<span style="background: var(--amber-bg); color: var(--amber); padding: 2px 6px; border-radius: 3px; font-size: 11px; font-weight: 650;">Disabled</span>';
+        federationInfo += '<tr style="border-bottom: 1px solid var(--line);">' +
+          '<td style="padding: 6px;"><code style="background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 11px; word-break: break-all;">' +
+          escapeHtml(member.url) + '</code></td>' +
+          '<td style="padding: 6px;">' + statusBadge + '</td></tr>';
+      }
+      federationInfo += '</tbody></table>';
+    }
+    federationInfo += '</div>';
+  }
+
+  drawer.innerHTML = "<h3>" + escapeHtml(row.repo_name) + '</h3>' + projectInfo + federationInfo +
     '<dl class="drawer-grid">' + detailRows +
     "<div><dt>Findings</dt><dd>" + (renderBadges(row.findings) || "None") + "</dd></div></dl>";
   drawer.classList.add("show");

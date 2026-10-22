@@ -176,6 +176,45 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		jsonProjectData = "{}"
 	}
 
+	// Build federated repos data for repo detail enrichment
+	var jsonFederationData string
+	if ro.Instance != nil && len(ro.Instance.FederatedRepos) > 0 {
+		fedData := make(map[string]interface{})
+		for _, f := range ro.Instance.FederatedRepos {
+			enabled := 0
+			for _, m := range f.Members {
+				if m.Enabled {
+					enabled++
+				}
+			}
+			total := len(f.Members)
+			var status string
+			switch {
+			case total == 0:
+				status = "No members configured"
+			case total == 1:
+				status = "Single member (not fully federated)"
+			case enabled < total:
+				status = fmt.Sprintf("Degraded (%d/%d enabled)", enabled, total)
+			default:
+				status = fmt.Sprintf("Healthy (%d/%d enabled)", enabled, total)
+			}
+			fedData[f.RepoKey] = map[string]interface{}{
+				"status":           status,
+				"enabled_members":  enabled,
+				"total_members":    total,
+				"members":          f.Members,
+			}
+		}
+		var err error
+		jsonFederationData, err = jsonForHTML(fedData)
+		if err != nil {
+			return "", fmt.Errorf("encoding federation data: %w", err)
+		}
+	} else {
+		jsonFederationData = "{}"
+	}
+
 	replacer := strings.NewReplacer(
 		"__CSS__", css,
 		"__SOURCE__", htmlEscape(ro.SourceFile),
@@ -186,6 +225,7 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		"__JSON_FINDINGS__", jsonFindingDefs,
 		"__PAGE_SIZE__", fmt.Sprintf("%d", ro.PageSize),
 		"__JSON_PROJECT_DATA__", jsonProjectData,
+		"__JSON_FEDERATION_DATA__", jsonFederationData,
 		"__GENERATED_AT__", htmlEscape(ro.GeneratedAt.Format("2006-01-02 15:04:05 MST")),
 		"__NAV_TABS__", navTabsHTML,
 		"__EXTRA_PANELS__", extraPanelsHTML,
