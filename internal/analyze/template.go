@@ -1144,6 +1144,7 @@ function renderSequenceDiagram(containerId, lanes, messages) {
 const DATA = __JSON_ROWS__;
 const FINDING_DEFS = __JSON_FINDINGS__;
 const PAGE_SIZE = __PAGE_SIZE__;
+const PROJECT_DATA = __JSON_PROJECT_DATA__;
 
 let repoType = "";
 let packageValue = "";
@@ -1297,7 +1298,25 @@ function showDetails(row) {
   const detailRows = pairs.map(([key, value]) =>
     "<div><dt>" + escapeHtml(prettyLabel(key)) + "</dt><dd>" +
     escapeHtml(value === "" || value === undefined ? "None" : value) + "</dd></div>").join("");
-  drawer.innerHTML = "<h3>" + escapeHtml(row.repo_name) + '</h3><dl class="drawer-grid">' + detailRows +
+
+  let projectInfo = "";
+  if (row.project_key && row.project_key !== "default") {
+    const projData = PROJECT_DATA[row.project_key];
+    if (projData) {
+      projectInfo = '<div style="margin-bottom: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--line);">' +
+        '<h4 style="margin: 0 0 8px; font-size: 14px; color: var(--slate);">Project Assignment</h4>' +
+        '<dl class="drawer-grid">' +
+        '<div><dt>Project Name</dt><dd>' + escapeHtml(projData.name || row.project_key) + '</dd></div>' +
+        '<div><dt>Project Key</dt><dd>' + escapeHtml(row.project_key) + '</dd></div>' +
+        (projData.description ? '<div><dt>Description</dt><dd>' + escapeHtml(projData.description) + '</dd></div>' : '') +
+        (projData.environments && projData.environments.length > 0 ?
+          '<div><dt>Stages/Environments</dt><dd>' + projData.environments.join(", ") + '</dd></div>' : '') +
+        '</dl></div>';
+    }
+  }
+
+  drawer.innerHTML = "<h3>" + escapeHtml(row.repo_name) + '</h3>' + projectInfo +
+    '<dl class="drawer-grid">' + detailRows +
     "<div><dt>Findings</dt><dd>" + (renderBadges(row.findings) || "None") + "</dd></div></dl>";
   drawer.classList.add("show");
   drawer.scrollIntoView({behavior: "smooth", block: "nearest"});

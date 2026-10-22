@@ -153,6 +153,29 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 			htmlAttr(ro.Instance.URL), htmlEscape(ro.Instance.URL))
 	}
 
+	// Build project data for repo detail enrichment
+	var jsonProjectData string
+	if ro.Instance != nil && len(ro.Instance.Projects) > 0 {
+		projData := make(map[string]interface{})
+		for _, p := range ro.Instance.Projects {
+			envList := make([]string, 0, len(p.Environments))
+			envList = append(envList, p.Environments...)
+			projData[p.Key] = map[string]interface{}{
+				"name":         p.DisplayName,
+				"description":  p.Description,
+				"environments": envList,
+				"repo_count":   p.RepoCount,
+			}
+		}
+		var err error
+		jsonProjectData, err = jsonForHTML(projData)
+		if err != nil {
+			return "", fmt.Errorf("encoding project data: %w", err)
+		}
+	} else {
+		jsonProjectData = "{}"
+	}
+
 	replacer := strings.NewReplacer(
 		"__CSS__", css,
 		"__SOURCE__", htmlEscape(ro.SourceFile),
@@ -162,6 +185,7 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		"__JSON_ROWS__", jsonRows,
 		"__JSON_FINDINGS__", jsonFindingDefs,
 		"__PAGE_SIZE__", fmt.Sprintf("%d", ro.PageSize),
+		"__JSON_PROJECT_DATA__", jsonProjectData,
 		"__GENERATED_AT__", htmlEscape(ro.GeneratedAt.Format("2006-01-02 15:04:05 MST")),
 		"__NAV_TABS__", navTabsHTML,
 		"__EXTRA_PANELS__", extraPanelsHTML,
