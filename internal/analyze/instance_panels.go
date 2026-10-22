@@ -888,6 +888,75 @@ func renderCurationPanel(snap *instance.Snapshot) (string, error) {
 		return b.String(), nil
 	}
 
+	// Build remotes with curation enabled
+	type curationRemote struct {
+		Name           string   `json:"name"`
+		PackageTypes   []string `json:"package_types"`
+		PolicyCount    int      `json:"policy_count"`
+		EnabledPolicies int      `json:"enabled_policies"`
+	}
+
+	remoteMap := make(map[string]*curationRemote)
+	for _, policy := range x.CurationPolicies {
+		// Extract repo/remote name from scope (typically "repo://repo-name" format)
+		remoteKey := policy.Scope
+		if remoteKey == "" {
+			remoteKey = "All Repos"
+		}
+
+		if _, exists := remoteMap[remoteKey]; !exists {
+			remoteMap[remoteKey] = &curationRemote{
+				Name:         remoteKey,
+				PackageTypes: []string{},
+			}
+		}
+
+		remote := remoteMap[remoteKey]
+		remote.PolicyCount++
+		if policy.Enabled {
+			remote.EnabledPolicies++
+		}
+
+		// Extract package type from condition if available
+		if policy.Condition != nil {
+			if pkgType, ok := policy.Condition["package_type"]; ok {
+				pkgTypeStr := fmt.Sprintf("%v", pkgType)
+				// Avoid duplicates
+				found := false
+				for _, pt := range remote.PackageTypes {
+					if pt == pkgTypeStr {
+						found = true
+						break
+					}
+				}
+				if !found {
+					remote.PackageTypes = append(remote.PackageTypes, pkgTypeStr)
+				}
+			}
+		}
+	}
+
+	// Convert map to sorted slice
+	remotes := make([]curationRemote, 0, len(remoteMap))
+	for _, r := range remoteMap {
+		sort.Strings(r.PackageTypes)
+		remotes = append(remotes, *r)
+	}
+	sort.Slice(remotes, func(i, j int) bool { return remotes[i].Name < remotes[j].Name })
+
+	// Add remotes section
+	if len(remotes) > 0 {
+		b.WriteString(fmt.Sprintf("<h2>Remotes with Curation Enabled (%d)</h2>", len(remotes)))
+		remotesHTML, err := renderGenericTable("curation-remotes", remotes, []tableColumn{
+			{Key: "name", Label: "Remote/Repo"}, {Key: "package_types", Label: "Package Types"},
+			{Key: "enabled_policies", Label: "Enabled Policies", Numeric: true}, {Key: "policy_count", Label: "Total Policies", Numeric: true},
+		})
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(remotesHTML)
+	}
+
 	tables := []struct {
 		id, label string
 		data      interface{}
