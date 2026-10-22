@@ -547,13 +547,111 @@ func renderFederationReplicationPanel(snap *instance.Snapshot) (string, error) {
 	var b strings.Builder
 
 	fmt.Fprintf(&b, "<h2>Federated repos (%d)</h2>", len(snap.FederatedRepos))
-	fedHTML, err := renderGenericTable("federation-table", federationRows(snap.FederatedRepos), []tableColumn{
-		{Key: "repo_key", Label: "Repo"}, {Key: "status", Label: "Status"}, {Key: "members", Label: "Members"},
-	})
+
+	// Build federation data with member details
+	fedRows := federationRows(snap.FederatedRepos)
+	jsonFedData, err := jsonForHTML(fedRows)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encoding federation data: %w", err)
 	}
-	b.WriteString(fedHTML)
+
+	// Build custom federation table with JavaScript
+	b.WriteString(`<div id="federation-container"></div>
+<script>
+const FED_DATA = ` + jsonFedData + `;
+
+function renderFederationTable() {
+  const container = document.getElementById("federation-container");
+  if (!container) return;
+
+  let html = '<div class="gt-toolbar"><input type="search" placeholder="Search repos..." class="gt-search"><span class="gt-count"></span></div>';
+  html += '<div class="generic-table"><div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>';
+  html += '<section class="drawer" id="federation-drawer"></section></div>';
+
+  container.innerHTML = html;
+
+  const search = container.querySelector(".gt-search");
+  const countEl = container.querySelector(".gt-count");
+  const thead = container.querySelector("thead");
+  const tbody = container.querySelector("tbody");
+  const drawer = container.querySelector("#federation-drawer");
+
+  const columns = [
+    {key: "repo_key", label: "Repository"},
+    {key: "status", label: "Federation Status"},
+    {key: "enabled_members", label: "Enabled Members", numeric: true},
+    {key: "total_members", label: "Total Members", numeric: true},
+  ];
+
+  thead.innerHTML = "<tr>" + columns.map(c =>
+    "<th" + (c.numeric ? ' class="number"' : "") + ">" + escapeHtml(c.label) + "</th>"
+  ).join("") + "</tr>";
+
+  function renderFederationDetail(fed) {
+    let html = '<div><h3>' + escapeHtml(fed.repo_key) + '</h3>';
+
+    html += '<section style="margin-bottom: 16px;"><h4 style="margin: 0 0 8px;">Federation Status</h4>';
+    html += '<dl class="drawer-grid">';
+    html += '<div><dt>Status</dt><dd>' + escapeHtml(fed.status) + '</dd></div>';
+    html += '<div><dt>Enabled Members</dt><dd>' + fed.enabled_members + ' / ' + fed.total_members + '</dd></div>';
+    html += '</dl></section>';
+
+    if (fed.members && fed.members.length > 0) {
+      html += '<section><h4 style="margin: 0 0 8px;">Federation Members</h4>';
+      html += '<table style="width: 100%; font-size: 13px; border-collapse: collapse;">';
+      html += '<thead><tr><th style="padding: 8px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 650;">URL</th>';
+      html += '<th style="padding: 8px; border-bottom: 1px solid var(--line); text-align: left; font-weight: 650;">Status</th></tr></thead>';
+      html += '<tbody>';
+      for (const member of fed.members) {
+        const statusBadge = member.enabled ?
+          '<span style="background: var(--green-bg); color: var(--green); padding: 2px 6px; border-radius: 3px; font-size: 12px;">Enabled</span>' :
+          '<span style="background: var(--amber-bg); color: var(--amber); padding: 2px 6px; border-radius: 3px; font-size: 12px;">Disabled</span>';
+        html += '<tr style="border-bottom: 1px solid var(--line);">';
+        html += '<td style="padding: 8px;"><code style="background: #f5f5f5; padding: 2px 4px; border-radius: 3px; font-size: 12px;">' +
+          escapeHtml(member.url) + '</code></td>';
+        html += '<td style="padding: 8px;">' + statusBadge + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table></section>';
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  function draw() {
+    const q = search.value.trim().toLowerCase();
+    const rows = FED_DATA.filter(f => !q || JSON.stringify(f).toLowerCase().includes(q));
+    countEl.textContent = rows.length.toLocaleString() + " / " + FED_DATA.length.toLocaleString();
+
+    tbody.innerHTML = rows.map((r, i) => '<tr data-index="' + i + '" style="cursor: pointer;">' +
+      columns.map(c => {
+        const val = r[c.key];
+        return "<td" + (c.numeric ? ' class="number"' : "") + " title=\"" + escapeHtml(String(val || "")) + "\">" +
+          escapeHtml(String(val || "")) + "</td>";
+      }).join("") +
+      "</tr>").join("");
+
+    tbody.querySelectorAll("tr").forEach(tr => tr.addEventListener("click", () => {
+      const row = rows[Number(tr.dataset.index)];
+      drawer.innerHTML = renderFederationDetail(row);
+      drawer.classList.add("show");
+      drawer.scrollIntoView({behavior: "smooth", block: "nearest"});
+    }));
+  }
+
+  search.addEventListener("input", draw);
+  draw();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", renderFederationTable);
+} else {
+  renderFederationTable();
+}
+</script>
+`)
+
 
 	fmt.Fprintf(&b, "<h2>Replication configs (%d)</h2>", len(snap.Replications))
 	repHTML, err := renderGenericTable("replication-table", snap.Replications, []tableColumn{
