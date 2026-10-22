@@ -273,15 +273,235 @@ func renderAccessPanel(snap *instance.Snapshot) (string, error) {
 
 func renderProjectsPanel(snap *instance.Snapshot) (string, error) {
 	var b strings.Builder
-	fmt.Fprintf(&b, `<h2>Projects (%d)</h2><p>Repos not assigned to any project show project_key %q on the Repos tab.</p>`, len(snap.Projects), "default")
-	projectsHTML, err := renderGenericTable("projects-table", snap.Projects, []tableColumn{
-		{Key: "key", Label: "Project Key"}, {Key: "display_name", Label: "Name"}, {Key: "description", Label: "Description"},
-		{Key: "repo_count", Label: "Repos", Numeric: true}, {Key: "storage_quota_bytes", Label: "Storage Quota (bytes)", Numeric: true},
-	})
-	if err != nil {
-		return "", err
+	fmt.Fprintf(&b, `<h2>Projects (%d)</h2><p>Repos not assigned to any project show project_key %q on the Repos tab. Click a project row for detailed attributes, roles, stages, and repository assignments.</p>`, len(snap.Projects), "default")
+
+	// Build summary view for each project
+	type roleDetail struct {
+		Name         string   `json:"name"`
+		Type         string   `json:"type"`
+		Environments []string `json:"environments,omitempty"`
+		Actions      []string `json:"actions,omitempty"`
 	}
-	b.WriteString(projectsHTML)
+
+	type memberDetail struct {
+		Name  string   `json:"name"`
+		Roles []string `json:"roles,omitempty"`
+	}
+
+	type projectSummary struct {
+		Key              string          `json:"key"`
+		DisplayName      string          `json:"display_name"`
+		Description      string          `json:"description,omitempty"`
+		RepoCount        int             `json:"repo_count"`
+		StorageQuotaGB   float64         `json:"storage_quota_gb"`
+		RoleCount        int             `json:"role_count"`
+		EnvironmentCount int             `json:"environment_count"`
+		UserCount        int             `json:"user_count"`
+		GroupCount       int             `json:"group_count"`
+		Repos            []string        `json:"repos,omitempty"`
+		Environments     []string        `json:"environments,omitempty"`
+		Roles            []roleDetail    `json:"roles,omitempty"`
+		Users            []memberDetail  `json:"users,omitempty"`
+		Groups           []memberDetail  `json:"groups,omitempty"`
+	}
+
+	summaries := make([]projectSummary, len(snap.Projects))
+	for i, p := range snap.Projects {
+		summaries[i] = projectSummary{
+			Key:              p.Key,
+			DisplayName:      p.DisplayName,
+			Description:      p.Description,
+			RepoCount:        p.RepoCount,
+			StorageQuotaGB:   float64(p.StorageQuotaBytes) / (1024 * 1024 * 1024),
+			RoleCount:        len(p.Roles),
+			EnvironmentCount: len(p.Environments),
+			UserCount:        len(p.Users),
+			GroupCount:       len(p.Groups),
+			Repos:            p.Repos,
+			Environments:     p.Environments,
+		}
+		for _, r := range p.Roles {
+			summaries[i].Roles = append(summaries[i].Roles, roleDetail{
+				Name:         r.Name,
+				Type:         r.Type,
+				Environments: r.Environments,
+				Actions:      r.Actions,
+			})
+		}
+		for _, u := range p.Users {
+			summaries[i].Users = append(summaries[i].Users, memberDetail{
+				Name:  u.Name,
+				Roles: u.Roles,
+			})
+		}
+		for _, g := range p.Groups {
+			summaries[i].Groups = append(summaries[i].Groups, memberDetail{
+				Name:  g.Name,
+				Roles: g.Roles,
+			})
+		}
+	}
+
+	jsonData, err := jsonForHTML(summaries)
+	if err != nil {
+		return "", fmt.Errorf("encoding projects: %w", err)
+	}
+
+	fmt.Fprintf(&b, `
+<div id="projects-container"></div>
+<script>
+const PROJECTS_DATA = %s;
+
+function renderProjectsPanel() {
+  const container = document.getElementById("projects-container");
+  if (!container) return;
+
+  let html = '<div class="gt-toolbar"><input type="search" placeholder="Search projects..." class="gt-search"><span class="gt-count"></span><button class="tab" id="select-all-btn">Select All</button></div>';
+  html += '<div class="generic-table"><div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>';
+  html += '<section class="drawer" id="projects-drawer"></section></div>';
+
+  container.innerHTML = html;
+
+  const search = container.querySelector(".gt-search");
+  const countEl = container.querySelector(".gt-count");
+  const selectAllBtn = container.querySelector("#select-all-btn");
+  const thead = container.querySelector("thead");
+  const tbody = container.querySelector("tbody");
+  const drawer = container.querySelector("#projects-drawer");
+
+  // Table columns
+  const columns = [
+    {key: "display_name", label: "Name"},
+    {key: "key", label: "Key"},
+    {key: "description", label: "Description"},
+    {key: "repo_count", label: "Repos", numeric: true},
+    {key: "storage_quota_gb", label: "Quota (GB)", numeric: true},
+    {key: "role_count", label: "Roles", numeric: true},
+    {key: "environment_count", label: "Environments", numeric: true},
+  ];
+
+  thead.innerHTML = "<tr>" + columns.map(c =>
+    "<th" + (c.numeric ? ' class="number"' : "") + ">" + escapeHtml(c.label) + "</th>"
+  ).join("") + "</tr>";
+
+  function formatStorageQuota(bytes) {
+    if (!bytes) return "Unlimited";
+    if (bytes >= 1024 * 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024 * 1024)).toFixed(2) + " TB";
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + " GB";
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + " MB";
+    return (bytes / 1024).toFixed(2) + " KB";
+  }
+
+  function renderProjectDetail(project) {
+    let html = '<div style="display: grid; gap: 20px;">';
+
+    // Basic info section
+    html += '<section><h3>' + escapeHtml(project.display_name || project.key) + '</h3>';
+    html += '<dl class="drawer-grid">';
+    html += '<div><dt>Project Key</dt><dd>' + escapeHtml(project.key) + '</dd></div>';
+    if (project.description) {
+      html += '<div><dt>Description</dt><dd>' + escapeHtml(project.description) + '</dd></div>';
+    }
+    html += '<div><dt>Repositories</dt><dd>' + project.repo_count + '</dd></div>';
+    html += '<div><dt>Storage Quota</dt><dd>' + (project.storage_quota_gb > 0 ? project.storage_quota_gb.toFixed(2) + " GB" : "Unlimited") + '</dd></div>';
+    html += '<div><dt>Environments</dt><dd>' + (project.environment_count || 0) + '</dd></div>';
+    html += '</dl></section>';
+
+    // Roles section
+    if (project.roles && project.roles.length > 0) {
+      html += '<section><h4>Roles (' + project.roles.length + ')</h4>';
+      html += '<table style="width: 100%; font-size: 13px;"><thead><tr><th>Name</th><th>Type</th><th>Environments</th><th>Actions</th></tr></thead><tbody>';
+      for (const role of project.roles) {
+        html += '<tr><td>' + escapeHtml(role.name) + '</td>';
+        html += '<td>' + escapeHtml(role.type) + '</td>';
+        html += '<td>' + (role.environments ? role.environments.join(", ") : "-") + '</td>';
+        html += '<td>' + (role.actions ? role.actions.join(", ") : "-") + '</td></tr>';
+      }
+      html += '</tbody></table></section>';
+    }
+
+    // Environments section
+    if (project.environments && project.environments.length > 0) {
+      html += '<section><h4>Environments (' + project.environments.length + ')</h4>';
+      html += '<p>' + project.environments.map(e => '<span class="badge">' + escapeHtml(e) + '</span>').join("") + '</p></section>';
+    }
+
+    // Repositories section
+    if (project.repos && project.repos.length > 0) {
+      html += '<section><h4>Repositories (' + project.repos.length + ')</h4>';
+      html += '<div style="max-height: 200px; overflow-y: auto;">';
+      html += '<ul style="padding-left: 20px; margin: 8px 0;">';
+      for (const repo of project.repos) {
+        html += '<li>' + escapeHtml(repo) + '</li>';
+      }
+      html += '</ul></div></section>';
+    }
+
+    // Users section
+    if (project.users && project.users.length > 0) {
+      html += '<section><h4>Users (' + project.users.length + ')</h4>';
+      html += '<table style="width: 100%; font-size: 13px;"><thead><tr><th>User</th><th>Roles</th></tr></thead><tbody>';
+      for (const user of project.users) {
+        html += '<tr><td>' + escapeHtml(user.name) + '</td>';
+        html += '<td>' + (user.roles ? user.roles.join(", ") : "-") + '</td></tr>';
+      }
+      html += '</tbody></table></section>';
+    }
+
+    // Groups section
+    if (project.groups && project.groups.length > 0) {
+      html += '<section><h4>Groups (' + project.groups.length + ')</h4>';
+      html += '<table style="width: 100%; font-size: 13px;"><thead><tr><th>Group</th><th>Roles</th></tr></thead><tbody>';
+      for (const group of project.groups) {
+        html += '<tr><td>' + escapeHtml(group.name) + '</td>';
+        html += '<td>' + (group.roles ? group.roles.join(", ") : "-") + '</td></tr>';
+      }
+      html += '</tbody></table></section>';
+    }
+
+    html += '</div>';
+    return html;
+  }
+
+  function draw() {
+    const q = search.value.trim().toLowerCase();
+    const rows = PROJECTS_DATA.filter(p => !q || JSON.stringify(p).toLowerCase().includes(q));
+    countEl.textContent = rows.length.toLocaleString() + " / " + PROJECTS_DATA.length.toLocaleString();
+
+    tbody.innerHTML = rows.map((r, i) => '<tr data-index="' + i + '" style="cursor: pointer;">' +
+      columns.map(c => {
+        let val = r[c.key];
+        if (c.key === "storage_quota_gb") val = (val > 0 ? val.toFixed(2) : "Unlimited");
+        return "<td" + (c.numeric ? ' class="number"' : "") + " title=\"" + escapeHtml(String(val || "")) + "\">" +
+          escapeHtml(String(val || "")) + "</td>";
+      }).join("") +
+      "</tr>").join("");
+
+    tbody.querySelectorAll("tr").forEach(tr => tr.addEventListener("click", () => {
+      const row = rows[Number(tr.dataset.index)];
+      drawer.innerHTML = renderProjectDetail(row);
+      drawer.classList.add("show");
+      drawer.scrollIntoView({behavior: "smooth", block: "nearest"});
+    }));
+  }
+
+  search.addEventListener("input", draw);
+  selectAllBtn.addEventListener("click", () => {
+    const allRows = tbody.querySelectorAll("tr");
+    allRows.forEach(tr => tr.style.backgroundColor = "#eaf2ff");
+  });
+
+  draw();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", renderProjectsPanel);
+} else {
+  renderProjectsPanel();
+}
+</script>
+`, jsonData)
+
 	return b.String(), nil
 }
 

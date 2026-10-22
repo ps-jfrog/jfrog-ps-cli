@@ -75,6 +75,13 @@ tbody tr:hover { background:#f5f9ff; }
 .drawer-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; }
 .drawer dt { font-size:11px; color:var(--muted); text-transform:uppercase; }
 .drawer dd { margin:2px 0 0; overflow-wrap:anywhere; }
+.drawer section { margin-bottom:16px; }
+.drawer h3 { margin:0 0 12px; font-size:18px; color:var(--ink); }
+.drawer h4 { margin:0 0 10px; font-size:14px; color:var(--slate); }
+.drawer table { border-collapse: collapse; width: 100%; margin-bottom: 12px; }
+.drawer table th, .drawer table td { padding: 8px; border-bottom: 1px solid var(--line); text-align: left; }
+.drawer table th { background: #f9fafb; font-weight: 650; font-size: 12px; }
+.drawer ul { margin: 8px 0; padding-left: 20px; }
 .foot { color:var(--muted); margin-top:18px; font-size:12px; }
 .report-tabs { display:flex; gap:8px; flex-wrap:wrap; position:sticky; top:0; z-index:5;
   padding:10px 0; margin-bottom:12px; background:var(--bg); border-bottom:1px solid var(--line); }
