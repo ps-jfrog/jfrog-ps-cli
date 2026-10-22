@@ -34,14 +34,16 @@ func EnrichProjectDetail(c *jfclient.Client, projects []instance.Project, concur
 			defer func() { <-sem }()
 
 			if key != "" {
-				base := "/access/api/v1/projects/" + url.PathEscape(key)
-				_ = fetchJSON(c, base+"/roles", &projects[i].Roles)
-				_ = fetchNameList(c, base+"/environments", &projects[i].Environments)
+				// Access API v1 endpoints for roles and environments
+				accessBase := "/access/api/v1/projects/" + url.PathEscape(key)
+				_ = fetchJSON(c, accessBase+"/roles", &projects[i].Roles)
+				_ = fetchNameList(c, accessBase+"/environments", &projects[i].Environments)
 
-				// Note: Project-specific members endpoints (GET /projects/{key}/members/users
-				// and /projects/{key}/members/groups) do not exist in the standard JFrog API.
-				// Users/Groups are assigned through global Access APIs, not project-specific
-				// member lists. The Users and Groups fields remain empty by design.
+				// Projects API v1 endpoints for project members
+				// Reference: https://docs.jfrog.com/projects/reference/getprojectusers
+				projectsBase := "/projects/" + url.PathEscape(key)
+				_ = fetchWrapped(c, projectsBase+"/users", "users", &projects[i].Users)
+				_ = fetchWrapped(c, projectsBase+"/groups", "groups", &projects[i].Groups)
 			}
 
 			if progress != nil {
