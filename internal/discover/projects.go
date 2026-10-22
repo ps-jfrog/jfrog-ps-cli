@@ -50,6 +50,10 @@ func GetProjects(c *jfclient.Client, repos []RepoSummary) ([]instance.Project, e
 			StorageQuotaBytes: p.StorageQuotaBytes,
 			RepoCount:         len(projectRepos),
 			Repos:             projectRepos,
+			Roles:             make([]instance.ProjectRole, 0),
+			Users:             make([]instance.ProjectMember, 0),
+			Groups:            make([]instance.ProjectMember, 0),
+			Environments:      make([]string, 0),
 		})
 	}
 	return projects, nil
