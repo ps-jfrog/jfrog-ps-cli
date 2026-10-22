@@ -38,12 +38,10 @@ func EnrichProjectDetail(c *jfclient.Client, projects []instance.Project, concur
 				_ = fetchJSON(c, base+"/roles", &projects[i].Roles)
 				_ = fetchNameList(c, base+"/environments", &projects[i].Environments)
 
-				// Try to fetch project members - the endpoint may not be available
-				// on all JFrog instances. These are silently skipped if unavailable.
-				// Different JFrog versions may use different endpoints or structures,
-				// so we don't collect these as warnings to avoid flooding the log.
-				_ = fetchWrapped(c, base+"/members/users", "members", &projects[i].Users)
-				_ = fetchWrapped(c, base+"/members/groups", "members", &projects[i].Groups)
+				// Note: Project-specific members endpoints (GET /projects/{key}/members/users
+				// and /projects/{key}/members/groups) do not exist in the standard JFrog API.
+				// Users/Groups are assigned through global Access APIs, not project-specific
+				// member lists. The Users and Groups fields remain empty by design.
 			}
 
 			if progress != nil {
