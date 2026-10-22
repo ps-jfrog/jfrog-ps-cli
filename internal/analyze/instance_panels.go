@@ -317,6 +317,9 @@ func renderProjectsPanel(snap *instance.Snapshot) (string, error) {
 			GroupCount:       len(p.Groups),
 			Repos:            p.Repos,
 			Environments:     p.Environments,
+			Roles:            make([]roleDetail, 0, len(p.Roles)),
+			Users:            make([]memberDetail, 0, len(p.Users)),
+			Groups:           make([]memberDetail, 0, len(p.Groups)),
 		}
 		for _, r := range p.Roles {
 			summaries[i].Roles = append(summaries[i].Roles, roleDetail{
