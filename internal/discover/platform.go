@@ -37,10 +37,10 @@ func GetPlatformConfig(c *jfclient.Client) (instance.PlatformConfig, []string) {
 	warn("password expiration policy", fetchJSON(c, "/artifactory/api/security/configuration/passwordExpirationPolicy", &cfg.PasswordPolicy))
 	warn("user lock policy", fetchJSON(c, "/artifactory/api/security/userLockPolicy", &cfg.UserLockPolicy))
 	warn("repo layouts", fetchJSON(c, "/artifactory/api/repolayouts", &cfg.RepoLayouts))
-	warn("reverse proxy config", fetchJSON(c, "/artifactory/api/system/reverse-proxy", &cfg.ReverseProxy))
-	warn("archive cleanup policies", fetchWrapped(c, "/artifactory/api/cleanup/archive/policies", "policies", &cfg.ArchiveCleanupPolicies))
-	warn("license", fetchJSON(c, "/access/api/v1/license", &cfg.License))
-	warn("workers", fetchWrapped(c, "/access/api/v1/workers", "workers", &cfg.Workers))
+	warn("reverse proxy config", fetchJSON(c, "/artifactory/api/system/configuration/webServer", &cfg.ReverseProxy))
+	warn("archive cleanup policies", fetchWrapped(c, "/artifactory/api/retention/archive/policies", "policies", &cfg.ArchiveCleanupPolicies))
+	warn("license", fetchJSON(c, "/artifactory/api/system/license", &cfg.License))
+	warn("workers", fetchWrapped(c, "/worker/api/v1/workers", "workers", &cfg.Workers))
 	warn("webhooks", getWebhooks(c, &cfg.Webhooks))
 
 	return cfg, warnings

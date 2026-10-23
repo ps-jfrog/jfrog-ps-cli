@@ -38,6 +38,11 @@ func GetXrayConfig(c *jfclient.Client) (instance.XrayConfig, []string) {
 	cfg.CurationAvailable = available
 	if available {
 		warn("xray curation waivers", fetchWrapped(c, "/xray/api/v1/curation/waiver_requests", "data", &cfg.CurationWaivers))
+		// This is the Artifactory host, not Xray - it's the authoritative
+		// per-repo "Connected" status shown in Administration > Curation >
+		// Remote Repositories, more accurate than inferring enablement from
+		// which repos a policy's RepoInclude happens to list.
+		warn("curation repos", fetchJSON(c, "/artifactory/api/curation/repositories", &cfg.CurationRepos))
 	}
 
 	warn("xray settings", getXraySettings(c, &cfg.Settings))

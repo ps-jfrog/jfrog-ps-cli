@@ -34,19 +34,13 @@ func EnrichProjectDetail(c *jfclient.Client, projects []instance.Project, concur
 			defer func() { <-sem }()
 
 			if key != "" {
-				// Projects API v1 endpoints for all project data
-				// Reference: https://docs.jfrog.com/projects/reference/getprojectrole
-				projectsBase := "/projects/" + url.PathEscape(key)
-				_ = fetchJSON(c, projectsBase+"/roles", &projects[i].Roles)
-
-				// Try both environment endpoint patterns since they may vary by version
-				// First try the direct /environments endpoint
-				_ = fetchNameList(c, projectsBase+"/environments", &projects[i].Environments)
-
-				// Project members endpoints
-				// Reference: https://docs.jfrog.com/projects/reference/getprojectusers
-				_ = fetchWrapped(c, projectsBase+"/users", "users", &projects[i].Users)
-				_ = fetchWrapped(c, projectsBase+"/groups", "groups", &projects[i].Groups)
+				// Access API v1 endpoints - these return {"members": [...]} wrapper
+				accessBase := "/access/api/v1/projects/" + url.PathEscape(key)
+				_ = fetchJSON(c, accessBase+"/roles", &projects[i].Roles)
+				_ = fetchNameList(c, accessBase+"/environments", &projects[i].Environments)
+				// Users and groups endpoints both return {"members": [...]} with member objects
+				_ = fetchWrapped(c, accessBase+"/users", "members", &projects[i].Users)
+				_ = fetchWrapped(c, accessBase+"/groups", "members", &projects[i].Groups)
 			}
 
 			if progress != nil {

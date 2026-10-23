@@ -36,6 +36,10 @@ func TestGetXrayConfig_HappyPath(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"data": []map[string]interface{}{{"id": 1, "status": "pending", "requesters": []map[string]interface{}{{"user": "alice", "justification": "needed for build"}}}},
 			})
+		case "/artifactory/api/curation/repositories":
+			_ = json.NewEncoder(w).Encode([]map[string]interface{}{
+				{"key": "r1-npm-remote", "packageType": "npm", "url": "https://registry.npmjs.org", "project": "default", "curated": true},
+			})
 		case "/xray/api/v1/configuration/systemParameters":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"maxDiskDataUsage": 80, "monitorSamplingInterval": 300, "jobInterval": 86400, "allowSendingAnalytics": true,
@@ -74,6 +78,9 @@ func TestGetXrayConfig_HappyPath(t *testing.T) {
 	}
 	if len(cfg.CurationWaivers) != 1 || cfg.CurationWaivers[0].Status != "pending" || len(cfg.CurationWaivers[0].Requesters) != 1 || cfg.CurationWaivers[0].Requesters[0].User != "alice" {
 		t.Errorf("unexpected CurationWaivers: %+v", cfg.CurationWaivers)
+	}
+	if len(cfg.CurationRepos) != 1 || cfg.CurationRepos[0].Key != "r1-npm-remote" || !cfg.CurationRepos[0].Curated {
+		t.Errorf("unexpected CurationRepos: %+v", cfg.CurationRepos)
 	}
 	if cfg.Settings == nil {
 		t.Fatal("expected non-nil Settings")

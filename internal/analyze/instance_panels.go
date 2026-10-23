@@ -287,20 +287,20 @@ func renderProjectsPanel(snap *instance.Snapshot) (string, error) {
 	}
 
 	type projectSummary struct {
-		Key              string          `json:"key"`
-		DisplayName      string          `json:"display_name"`
-		Description      string          `json:"description,omitempty"`
-		RepoCount        int             `json:"repo_count"`
-		StorageQuotaGB   float64         `json:"storage_quota_gb"`
-		RoleCount        int             `json:"role_count"`
-		EnvironmentCount int             `json:"environment_count"`
-		UserCount        int             `json:"user_count"`
-		GroupCount       int             `json:"group_count"`
-		Repos            []string        `json:"repos,omitempty"`
-		Environments     []string        `json:"environments,omitempty"`
-		Roles            []roleDetail    `json:"roles,omitempty"`
-		Users            []memberDetail  `json:"users,omitempty"`
-		Groups           []memberDetail  `json:"groups,omitempty"`
+		Key              string         `json:"key"`
+		DisplayName      string         `json:"display_name"`
+		Description      string         `json:"description,omitempty"`
+		RepoCount        int            `json:"repo_count"`
+		StorageQuotaGB   float64        `json:"storage_quota_gb"`
+		RoleCount        int            `json:"role_count"`
+		EnvironmentCount int            `json:"environment_count"`
+		UserCount        int            `json:"user_count"`
+		GroupCount       int            `json:"group_count"`
+		Repos            []string       `json:"repos,omitempty"`
+		Environments     []string       `json:"environments,omitempty"`
+		Roles            []roleDetail   `json:"roles,omitempty"`
+		Users            []memberDetail `json:"users,omitempty"`
+		Groups           []memberDetail `json:"groups,omitempty"`
 	}
 
 	summaries := make([]projectSummary, len(snap.Projects))
@@ -348,10 +348,10 @@ func renderProjectsPanel(snap *instance.Snapshot) (string, error) {
 		return "", fmt.Errorf("encoding projects: %w", err)
 	}
 
-	fmt.Fprintf(&b, `
+	b.WriteString(`
 <div id="projects-container"></div>
 <script>
-const PROJECTS_DATA = %s;
+const PROJECTS_DATA = ` + jsonData + `;
 
 function renderProjectsPanel() {
   const container = document.getElementById("projects-container");
@@ -501,7 +501,7 @@ if (document.readyState === "loading") {
   renderProjectsPanel();
 }
 </script>
-`, jsonData)
+`)
 
 	return b.String(), nil
 }
@@ -654,7 +654,6 @@ if (document.readyState === "loading") {
 }
 </script>
 `)
-
 
 	fmt.Fprintf(&b, "<h2>Replication configs (%d)</h2>", len(snap.Replications))
 	repHTML, err := renderGenericTable("replication-table", snap.Replications, []tableColumn{
@@ -891,59 +890,65 @@ func renderCurationPanel(snap *instance.Snapshot) (string, error) {
 		return b.String(), nil
 	}
 
-	// Build remotes with curation enabled
+	// Build remotes with curation enabled, using CurationRepos (GET
+	// /artifactory/api/curation/repositories) as the authoritative source
+	// of per-repo "Connected" status - not inferred from policy scope,
+	// which is an enum ("all_repos"/"specific_repos"/"pkg_types"), never a
+	// repo name.
 	type curationRemote struct {
-		Name           string   `json:"name"`
-		PackageTypes   []string `json:"package_types"`
-		PolicyCount    int      `json:"policy_count"`
-		EnabledPolicies int      `json:"enabled_policies"`
+		Name               string `json:"name"`
+		PackageType        string `json:"package_type"`
+		Curated            bool   `json:"curated"`
+		ApplicablePolicies int    `json:"applicable_policies"`
+		PolicyNames        string `json:"policy_names"`
 	}
 
-	remoteMap := make(map[string]*curationRemote)
-	for _, policy := range x.CurationPolicies {
-		// Extract repo/remote name from scope (typically "repo://repo-name" format)
-		remoteKey := policy.Scope
-		if remoteKey == "" {
-			remoteKey = "All Repos"
-		}
-
-		if _, exists := remoteMap[remoteKey]; !exists {
-			remoteMap[remoteKey] = &curationRemote{
-				Name:         remoteKey,
-				PackageTypes: []string{},
-			}
-		}
-
-		remote := remoteMap[remoteKey]
-		remote.PolicyCount++
-		if policy.Enabled {
-			remote.EnabledPolicies++
-		}
-
-		// Extract package type from condition if available
-		if policy.Condition != nil {
-			if pkgType, ok := policy.Condition["package_type"]; ok {
-				pkgTypeStr := fmt.Sprintf("%v", pkgType)
-				// Avoid duplicates
-				found := false
-				for _, pt := range remote.PackageTypes {
-					if pt == pkgTypeStr {
-						found = true
-						break
-					}
-				}
-				if !found {
-					remote.PackageTypes = append(remote.PackageTypes, pkgTypeStr)
+	policyAppliesTo := func(p instance.XrayCurationPolicy, repo instance.CurationRepo) bool {
+		switch p.Scope {
+		case "all_repos":
+			return true
+		case "specific_repos":
+			for _, r := range p.RepoInclude {
+				if r == repo.Key {
+					return true
 				}
 			}
+			return false
+		case "pkg_types":
+			if p.Condition == nil {
+				return false
+			}
+			raw, ok := p.Condition["supported_pkg_types"].([]interface{})
+			if !ok {
+				return false
+			}
+			for _, pt := range raw {
+				if s, ok := pt.(string); ok && strings.EqualFold(s, repo.PackageType) {
+					return true
+				}
+			}
+			return false
+		default:
+			return false
 		}
 	}
 
-	// Convert map to sorted slice
-	remotes := make([]curationRemote, 0, len(remoteMap))
-	for _, r := range remoteMap {
-		sort.Strings(r.PackageTypes)
-		remotes = append(remotes, *r)
+	remotes := make([]curationRemote, 0, len(x.CurationRepos))
+	for _, repo := range x.CurationRepos {
+		var names []string
+		for _, p := range x.CurationPolicies {
+			if p.Enabled && policyAppliesTo(p, repo) {
+				names = append(names, p.Name)
+			}
+		}
+		sort.Strings(names)
+		remotes = append(remotes, curationRemote{
+			Name:               repo.Key,
+			PackageType:        repo.PackageType,
+			Curated:            repo.Curated,
+			ApplicablePolicies: len(names),
+			PolicyNames:        strings.Join(names, ", "),
+		})
 	}
 	sort.Slice(remotes, func(i, j int) bool { return remotes[i].Name < remotes[j].Name })
 
@@ -951,13 +956,15 @@ func renderCurationPanel(snap *instance.Snapshot) (string, error) {
 	if len(remotes) > 0 {
 		b.WriteString(fmt.Sprintf("<h2>Remotes with Curation Enabled (%d)</h2>", len(remotes)))
 		remotesHTML, err := renderGenericTable("curation-remotes", remotes, []tableColumn{
-			{Key: "name", Label: "Remote/Repo"}, {Key: "package_types", Label: "Package Types"},
-			{Key: "enabled_policies", Label: "Enabled Policies", Numeric: true}, {Key: "policy_count", Label: "Total Policies", Numeric: true},
+			{Key: "name", Label: "Remote"}, {Key: "package_type", Label: "Package Type"}, {Key: "curated", Label: "Curated"},
+			{Key: "applicable_policies", Label: "Applicable Policies", Numeric: true}, {Key: "policy_names", Label: "Policy Names"},
 		})
 		if err != nil {
 			return "", err
 		}
 		b.WriteString(remotesHTML)
+	} else if len(x.CurationPolicies) > 0 {
+		b.WriteString(`<div class="callout info">No per-repo curation status available (GET /artifactory/api/curation/repositories returned nothing) - showing policies only below.</div>`)
 	}
 
 	tables := []struct {
@@ -966,7 +973,7 @@ func renderCurationPanel(snap *instance.Snapshot) (string, error) {
 		cols      []tableColumn
 	}{
 		{"curation-policies", "Curation policies", x.CurationPolicies, []tableColumn{
-			{Key: "name", Label: "Name"}, {Key: "enabled", Label: "Enabled"}, {Key: "scope", Label: "Scope"}, {Key: "policy_action", Label: "Action"},
+			{Key: "name", Label: "Name"}, {Key: "enabled", Label: "Enabled"}, {Key: "scope", Label: "Scope"}, {Key: "repo_include", Label: "Repos"}, {Key: "policy_action", Label: "Action"},
 		}},
 		{"curation-waivers", "Curation waivers", curationWaiverRows(x.CurationWaivers), []tableColumn{
 			{Key: "id", Label: "ID", Numeric: true}, {Key: "status", Label: "Status"}, {Key: "requested_by", Label: "Requested By"},

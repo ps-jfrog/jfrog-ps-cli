@@ -19,7 +19,7 @@ func TestGetSystemInfo_ArtifactoryRequiredOthersOptional(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"xray_version": "3.152.6", "xray_revision": "abc"})
 		case "/access/api/v1/system/version":
 			w.WriteHeader(http.StatusNotFound)
-		case "/distribution/api/v1/system/version":
+		case "/distribution/api/v1/system/info":
 			w.WriteHeader(http.StatusNotFound)
 		case "/artifactory/api/storageinfo":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{

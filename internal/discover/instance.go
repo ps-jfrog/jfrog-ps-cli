@@ -148,12 +148,6 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 			opts.Progress("AppTrust Templates", len(templates), len(templates))
 		}
 	}
-	if evidence, err := GetAppTrustEvidence(c); err == nil {
-		snap.AppTrustEvidence = evidence
-		if opts.Progress != nil {
-			opts.Progress("AppTrust Evidence", len(evidence), len(evidence))
-		}
-	}
 	if bundles, err := GetAppTrustReleaseBundles(c); err == nil {
 		snap.AppTrustReleaseBundles = bundles
 		if opts.Progress != nil {
@@ -171,6 +165,17 @@ func CollectInstance(c *jfclient.Client, repos []RepoSummary, opts CollectOption
 			projectKeys[i] = p.Key
 		}
 		snap.AppTrustStages = GetAppTrustStagesForProjects(c, projectKeys, opts.Concurrency, stageProgress("AppTrust Stages"))
+	}
+
+	// Evidence is per-repo (repository_key is a required search param - an
+	// instance-wide search returns 400 "repoKey is empty"), so it's fetched
+	// once per already-collected repo key, same pattern as Stages above.
+	if len(repos) > 0 {
+		repoKeys := make([]string, len(repos))
+		for i, r := range repos {
+			repoKeys[i] = r.RepoKey
+		}
+		snap.AppTrustEvidence = GetAppTrustEvidenceForRepos(c, repoKeys, opts.Concurrency, stageProgress("AppTrust Evidence"))
 	}
 
 	// Build AppTrust relationship junctions to show how applications, policies,

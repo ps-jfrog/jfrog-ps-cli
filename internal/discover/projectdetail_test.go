@@ -53,7 +53,7 @@ func TestEnrichProjectDetail_MembersWhenPresent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/access/api/v1/projects/team-b/members/users":
+		case "/access/api/v1/projects/team-b/users":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"members": []map[string]interface{}{{"name": "alice", "roles": []string{"Developer"}}},
 			})

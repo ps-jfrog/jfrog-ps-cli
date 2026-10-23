@@ -37,11 +37,11 @@ func TestGetPlatformConfig_HappyPathAndSoftSkips(t *testing.T) {
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"enabled": true, "passwordMaxAge": 180, "notifyByEmail": true})
 		case "/artifactory/api/security/userLockPolicy":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{"enabled": true, "loginAttempts": 5})
-		case "/artifactory/api/cleanup/archive/policies":
+		case "/artifactory/api/retention/archive/policies":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"policies": []map[string]interface{}{{"key": "arch1", "cron_exp": "0 0 3 * * ?", "enabled": true}},
 			})
-		case "/access/api/v1/workers":
+		case "/worker/api/v1/workers":
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"workers": []map[string]interface{}{{"key": "w1", "enabled": true}},
 			})

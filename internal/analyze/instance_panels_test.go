@@ -67,7 +67,7 @@ func TestRender_WithInstance_AddsTabsAndPanels(t *testing.T) {
 		`data-report-panel="all-findings"`, `data-report-panel="relationships"`, `data-report-panel="overview"`, `data-report-panel="access"`,
 		`data-report-panel="projects"`, `data-report-panel="fedrep"`, `data-report-panel="platform"`, `data-report-panel="xray"`, `data-report-panel="curation"`,
 		`mountTable("access-users"`, `mountTable("access-groups"`, `mountTable("access-permissions"`, `mountTable("access-tokens"`,
-		`mountTable("projects-table"`, `mountTable("federation-table"`, `mountTable("replication-table"`,
+		`id="projects-container"`, `const PROJECTS_DATA`, `id="federation-container"`, `const FED_DATA`, `mountTable("replication-table"`,
 		`mountTable("platform-roles"`, `mountTable("platform-webhooks"`,
 		`mountTable("platform-signing-keys"`, `mountTable("xray-policies"`, `mountTable("xray-watches"`, `mountTable("all-findings-table"`,
 		`id="rel-project-search"`, `id="rel-select"`, `id="rel-summary"`, `id="rel-diagram"`, `mountTable("rel-table"`, "REL_DATA",

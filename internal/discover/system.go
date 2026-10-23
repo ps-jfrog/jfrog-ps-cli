@@ -54,7 +54,7 @@ func GetSystemInfo(c *jfclient.Client) (instance.SystemInfo, []string, error) {
 		info.AccessAvailable, info.AccessVersion = avail, v
 	}
 
-	if v, _, avail, err := getComponentVersion(c, "/distribution/api/v1/system/version", "version", "revision"); err != nil {
+	if v, _, avail, err := getComponentVersion(c, "/distribution/api/v1/system/info", "version", "revision"); err != nil {
 		warnings = append(warnings, fmt.Sprintf("distribution version: %v", err))
 	} else {
 		info.DistributionAvailable, info.DistributionVersion = avail, v

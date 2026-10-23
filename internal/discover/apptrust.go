@@ -14,6 +14,7 @@ package discover
 
 import (
 	"fmt"
+	"net/url"
 	"sync"
 
 	"jfrogpscli/internal/instance"
@@ -30,7 +31,7 @@ func GetAppTrustApplications(client *jfclient.Client) ([]instance.AppTrustApplic
 	offset := 0
 	for {
 		var page struct {
-			Total        int                           `json:"total"`
+			Total        int                            `json:"total"`
 			Offset       int                            `json:"offset"`
 			Limit        int                            `json:"limit"`
 			Applications []instance.AppTrustApplication `json:"applications"`
@@ -68,7 +69,7 @@ func GetAppTrustPolicies(client *jfclient.Client) ([]instance.AppTrustPolicy, er
 	for {
 		var page struct {
 			Items      []instance.AppTrustPolicy `json:"items"`
-			TotalCount int                        `json:"total_count"`
+			TotalCount int                       `json:"total_count"`
 		}
 		resp, err := client.Get(fmt.Sprintf("/unifiedpolicy/api/v1/policies?limit=%d&offset=%d", appTrustPageLimit, offset))
 		if err != nil {
@@ -275,16 +276,20 @@ func GetAppTrustStagesForProjects(client *jfclient.Client, projectKeys []string,
 	return all
 }
 
-// GetAppTrustEvidence fetches every evidence record from
-// GET /evidence/api/v1/evidence-search, paginating via offset/limit.
-func GetAppTrustEvidence(client *jfclient.Client) ([]instance.AppTrustEvidence, error) {
+// GetAppTrustEvidenceForRepo fetches every evidence record attached to one
+// repository from GET /evidence/api/v1/evidence-search?repository_key=...,
+// paginating via offset/limit. There is no instance-wide "search all repos"
+// mode - repository_key is a required param (confirmed live: omitting it
+// returns 400 "repoKey is empty") - so GetAppTrustEvidenceForRepos below,
+// which calls this once per repo, is the entry point callers actually want.
+func GetAppTrustEvidenceForRepo(client *jfclient.Client, repoKey string) ([]instance.AppTrustEvidence, error) {
 	var all []instance.AppTrustEvidence
 	offset := 0
 	for {
 		var page struct {
 			Evidence []instance.AppTrustEvidence `json:"evidence"`
 		}
-		resp, err := client.Get(fmt.Sprintf("/evidence/api/v1/evidence-search?limit=%d&offset=%d", appTrustPageLimit, offset))
+		resp, err := client.Get(fmt.Sprintf("/evidence/api/v1/evidence-search?repository_key=%s&limit=%d&offset=%d", url.QueryEscape(repoKey), appTrustPageLimit, offset))
 		if err != nil {
 			if offset == 0 {
 				return nil, nil
@@ -298,7 +303,7 @@ func GetAppTrustEvidence(client *jfclient.Client) ([]instance.AppTrustEvidence, 
 			return all, nil
 		}
 		if err := resp.Unmarshal(&page); err != nil {
-			return all, fmt.Errorf("parse apptrust evidence: %w", err)
+			return all, fmt.Errorf("parse apptrust evidence for repo %s: %w", repoKey, err)
 		}
 		all = append(all, page.Evidence...)
 		if len(page.Evidence) < appTrustPageLimit {
@@ -307,6 +312,55 @@ func GetAppTrustEvidence(client *jfclient.Client) ([]instance.AppTrustEvidence, 
 		offset += appTrustPageLimit
 	}
 	return all, nil
+}
+
+// GetAppTrustEvidenceForRepos fetches evidence for every given repo key,
+// concurrently (bounded by concurrency), and flattens the results into one
+// slice. A repo with no evidence (or a 404/400 because evidence isn't
+// available for it) is silently skipped rather than treated as an error.
+// onProgress, if non-nil, is called as each repo finishes with (done,
+// total) so a caller can drive a live progress bar across however many
+// repos there are.
+func GetAppTrustEvidenceForRepos(client *jfclient.Client, repoKeys []string, concurrency int, onProgress func(done, total int)) []instance.AppTrustEvidence {
+	if len(repoKeys) == 0 {
+		return nil
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	results := make([][]instance.AppTrustEvidence, len(repoKeys))
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	done := 0
+
+	for i, key := range repoKeys {
+		wg.Add(1)
+		go func(i int, key string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			evidence, err := GetAppTrustEvidenceForRepo(client, key)
+			mu.Lock()
+			if err == nil {
+				results[i] = evidence
+			}
+			done++
+			if onProgress != nil {
+				onProgress(done, len(repoKeys))
+			}
+			mu.Unlock()
+		}(i, key)
+	}
+	wg.Wait()
+
+	var all []instance.AppTrustEvidence
+	for _, evidence := range results {
+		all = append(all, evidence...)
+	}
+	return all
 }
 
 // GetAppTrustReleaseBundles fetches every Release Bundle v2 name from
@@ -333,12 +387,12 @@ func GetAppTrustReleaseBundles(client *jfclient.Client) ([]instance.AppTrustRele
 // the policies that target them, based on policy scope (global, project, app-key, or label).
 func BuildAppTrustApplicationPolicies(apps []instance.AppTrustApplication, policies []instance.AppTrustPolicy) []instance.AppTrustApplicationPolicy {
 	var result []instance.AppTrustApplicationPolicy
-	
+
 	for _, app := range apps {
 		for _, policy := range policies {
 			matches := false
 			scopeMechanism := ""
-			
+
 			// Global scope = all applications
 			if policy.Scope.ScopeType == "global" {
 				matches = true
@@ -366,7 +420,7 @@ func BuildAppTrustApplicationPolicies(apps []instance.AppTrustApplication, polic
 					for _, label := range policy.Scope.ApplicationLabels {
 						// Labels format: "key:value", app has label key:value pairs
 						for _, appLabel := range app.Labels {
-							if label == appLabel.Key + ":" + appLabel.Value {
+							if label == appLabel.Key+":"+appLabel.Value {
 								matches = true
 								scopeMechanism = "label:" + label
 								break
@@ -378,7 +432,7 @@ func BuildAppTrustApplicationPolicies(apps []instance.AppTrustApplication, polic
 					}
 				}
 			}
-			
+
 			if matches {
 				result = append(result, instance.AppTrustApplicationPolicy{
 					ApplicationKey:  app.ApplicationKey,
@@ -394,7 +448,7 @@ func BuildAppTrustApplicationPolicies(apps []instance.AppTrustApplication, polic
 			}
 		}
 	}
-	
+
 	return result
 }
 
@@ -406,13 +460,13 @@ func BuildAppTrustPolicyRules(policies []instance.AppTrustPolicy, rules []instan
 	for _, t := range templates {
 		templateByID[t.ID] = t
 	}
-	
+
 	// Build rule lookup
 	ruleByID := make(map[string]instance.AppTrustRule)
 	for _, r := range rules {
 		ruleByID[r.ID] = r
 	}
-	
+
 	var result []instance.AppTrustPolicyRule
 	for _, policy := range policies {
 		for ruleOrder, ruleID := range policy.RuleIDs {
@@ -420,14 +474,14 @@ func BuildAppTrustPolicyRules(policies []instance.AppTrustPolicy, rules []instan
 			if !ruleOk {
 				continue // Skip if rule not found
 			}
-			
+
 			templateName := ""
 			if rule.TemplateID != "" {
 				if tmpl, ok := templateByID[rule.TemplateID]; ok {
 					templateName = tmpl.Name
 				}
 			}
-			
+
 			result = append(result, instance.AppTrustPolicyRule{
 				PolicyID:     policy.ID,
 				PolicyName:   policy.Name,
@@ -439,6 +493,6 @@ func BuildAppTrustPolicyRules(policies []instance.AppTrustPolicy, rules []instan
 			})
 		}
 	}
-	
+
 	return result
 }
