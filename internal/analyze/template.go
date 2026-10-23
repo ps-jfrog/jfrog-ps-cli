@@ -105,13 +105,6 @@ tbody tr:hover { background:#f5f9ff; }
 .generic-table { border:1px solid var(--line); border-radius:0 0 12px 12px; overflow:hidden; margin-bottom:24px; }
 .generic-table .table-wrap { max-height:520px; }
 .generic-table td { max-width:360px; overflow:hidden; text-overflow:ellipsis; }
-.pagination { display:flex; gap:8px; align-items:center; padding:12px 14px; border-top:1px solid var(--line);
-  background:#f9fafb; border-radius:0 0 12px 12px; justify-content:center; flex-wrap:wrap; }
-.pagination button { border:1px solid var(--line); border-radius:7px; background:white; padding:7px 12px;
-  cursor:pointer; font-size:12px; color:var(--slate); }
-.pagination button:disabled { opacity:0.5; cursor:not-allowed; }
-.pagination button:hover:not(:disabled) { background:var(--blue); color:white; border-color:var(--blue); }
-.pagination .page-info { font-size:12px; color:var(--muted); white-space:nowrap; }
 .rel-toolbar { display:flex; gap:10px; align-items:center; padding:14px 0; flex-wrap:wrap; }
 .rel-toolbar select { min-width:320px; }
 .rel-toolbar input[type=search] { min-width:0; flex:none; width:220px; }
@@ -935,69 +928,33 @@ function cellDisplay(value) {
   return String(value);
 }
 
-function mountTable(containerId, data, columns, pageSize) {
+function mountTable(containerId, data, columns) {
   const root = document.getElementById(containerId);
   if (!root) return;
   data = data || [];
-  pageSize = pageSize || 0; // 0 = no pagination
-
   root.innerHTML =
     '<div class="gt-toolbar"><input type="search" placeholder="Search..." class="gt-search"><span class="gt-count"></span></div>' +
     '<div class="generic-table"><div class="table-wrap"><table><thead></thead><tbody></tbody></table></div>' +
-    '<section class="drawer"></section>' +
-    (pageSize > 0 ? '<div class="pagination"></div>' : '') +
-    '</div>';
+    '<section class="drawer"></section></div>';
   const search = root.querySelector(".gt-search");
   const countEl = root.querySelector(".gt-count");
   const thead = root.querySelector("thead");
   const tbody = root.querySelector("tbody");
   const drawer = root.querySelector(".drawer");
-  const pagination = root.querySelector(".pagination");
 
   thead.innerHTML = "<tr>" + columns.map(c =>
     "<th" + (c.numeric ? ' class="number"' : "") + ">" + escapeHtml(c.label) + "</th>").join("") + "</tr>";
 
-  let currentPage = 1;
-
-  function renderRows(filteredRows) {
-    if (pageSize <= 0) {
-      // No pagination - show all
-      tbody.innerHTML = filteredRows.map((r, i) => '<tr data-index="' + i + '">' +
-        columns.map(c => "<td" + (c.numeric ? ' class="number"' : "") + " title=\"" + escapeHtml(cellDisplay(r[c.key])) + "\">" +
-          escapeHtml(cellDisplay(r[c.key])) + "</td>").join("") +
-        "</tr>").join("");
-    } else {
-      // Pagination - show current page
-      const pageCount = Math.ceil(filteredRows.length / pageSize);
-      currentPage = Math.max(1, Math.min(currentPage, pageCount));
-      const start = (currentPage - 1) * pageSize;
-      const end = start + pageSize;
-      const pageRows = filteredRows.slice(start, end);
-
-      tbody.innerHTML = pageRows.map((r, i) => '<tr data-index="' + (start + i) + '">' +
-        columns.map(c => "<td" + (c.numeric ? ' class="number"' : "") + " title=\"" + escapeHtml(cellDisplay(r[c.key])) + "\">" +
-          escapeHtml(cellDisplay(r[c.key])) + "</td>").join("") +
-        "</tr>").join("");
-
-      // Update pagination controls
-      if (pagination) {
-        const prevBtn = '<button class="pg-prev" ' + (currentPage === 1 ? 'disabled' : '') + '>← Previous</button>';
-        const nextBtn = '<button class="pg-next" ' + (currentPage >= pageCount ? 'disabled' : '') + '>Next →</button>';
-        const pageInfo = '<span class="page-info">Page ' + currentPage + ' of ' + pageCount + '</span>';
-        pagination.innerHTML = prevBtn + pageInfo + nextBtn;
-
-        const prevBtn_el = pagination.querySelector(".pg-prev");
-        const nextBtn_el = pagination.querySelector(".pg-next");
-        if (prevBtn_el) prevBtn_el.addEventListener("click", () => { currentPage--; draw(); });
-        if (nextBtn_el) nextBtn_el.addEventListener("click", () => { currentPage++; draw(); });
-      }
-    }
-
-    // Attach click listeners for details drawer
+  function draw() {
+    const q = search.value.trim().toLowerCase();
+    const rows = data.filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
+    countEl.textContent = rows.length.toLocaleString() + " / " + data.length.toLocaleString();
+    tbody.innerHTML = rows.map((r, i) => '<tr data-index="' + i + '">' +
+      columns.map(c => "<td" + (c.numeric ? ' class="number"' : "") + " title=\"" + escapeHtml(cellDisplay(r[c.key])) + "\">" +
+        escapeHtml(cellDisplay(r[c.key])) + "</td>").join("") +
+      "</tr>").join("");
     tbody.querySelectorAll("tr").forEach(tr => tr.addEventListener("click", () => {
-      const idx = Number(tr.dataset.index);
-      const row = filteredRows[idx];
-      if (!row) return;
+      const row = rows[Number(tr.dataset.index)];
       const pairs = Object.entries(row);
       drawer.innerHTML = '<dl class="drawer-grid">' + pairs.map(([k, v]) =>
         "<div><dt>" + escapeHtml(prettyLabel(k)) + "</dt><dd>" +
@@ -1005,13 +962,6 @@ function mountTable(containerId, data, columns, pageSize) {
       drawer.classList.add("show");
       drawer.scrollIntoView({behavior: "smooth", block: "nearest"});
     }));
-  }
-
-  function draw() {
-    const q = search.value.trim().toLowerCase();
-    const rows = data.filter(r => !q || JSON.stringify(r).toLowerCase().includes(q));
-    countEl.textContent = rows.length.toLocaleString() + " / " + data.length.toLocaleString();
-    renderRows(rows);
   }
   search.addEventListener("input", draw);
   draw();
@@ -1143,7 +1093,6 @@ function renderSequenceDiagram(containerId, lanes, messages) {
 <script>
 const DATA = __JSON_ROWS__;
 const FINDING_DEFS = __JSON_FINDINGS__;
-const PAGE_SIZE = __PAGE_SIZE__;
 const PROJECT_DATA = __JSON_PROJECT_DATA__;
 const FEDERATION_DATA = __JSON_FEDERATION_DATA__;
 

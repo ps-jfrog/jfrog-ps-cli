@@ -1135,7 +1135,7 @@ func renderGenericTable(containerID string, data interface{}, columns []tableCol
 	if err != nil {
 		return "", fmt.Errorf("encoding %s columns: %w", containerID, err)
 	}
-	return fmt.Sprintf("<div id=%q></div>\n<script>mountTable(%q, %s, %s, PAGE_SIZE);</script>\n",
+	return fmt.Sprintf("<div id=%q></div>\n<script>mountTable(%q, %s, %s);</script>\n",
 		containerID, containerID, jsonData, jsonCols), nil
 }
 
