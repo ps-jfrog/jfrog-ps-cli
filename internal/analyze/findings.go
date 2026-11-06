@@ -9,6 +9,8 @@ import (
 )
 
 var legalKey = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
+var promotionStageSuffixes = []string{"-dev", "-develop", "-devel", "-stage", "-staging", "-qa", "-uat", "-test", "-testing", "-prod", "-production", "-release", "-live"}
+var promotionStagePatterns = regexp.MustCompile(`(?i)-(dev|develop|devel|stage|staging|qa|uat|test|testing|prod|production|release|live)$|^(dev|develop|devel|stage|staging|qa|uat|test|testing|prod|production|release|live)-`)
 
 // Options tunes the thresholds findings are flagged against.
 type Options struct {
@@ -43,6 +45,7 @@ func (o Options) Defs(header []string) []FindingDef {
 		{"uppercase", "Uppercase in key", "Contains uppercase letters, inconsistent with a lowercase-hyphen convention.", "purple"},
 		{"underscore", "Underscore in key", "Contains '_', inconsistent with a lowercase-hyphen convention.", "purple"},
 		{"very-long-name", fmt.Sprintf("Name over %d chars", o.LongNameChars), "Unusually long repo key - check for accidental duplication or naming-convention drift.", "info"},
+		{"uses-promotion", "Part of promotion chain", "This repo is part of an artifact promotion workflow - repo name matches others with different stage suffixes (e.g., myapp-dev, myapp-staging, myapp-prod). Ensure cleanup policies account for promotion workflows.", "success"},
 		{"huge", fmt.Sprintf("Over %.0f GB used", o.HugeGB), "Needs a dedicated transfer/cleanup window and tuned batching regardless of package type.", "red"},
 		{"massive-files", fmt.Sprintf("Over %s files", humanInt(o.MassiveFiles)), "A high file count slows transfers, backups, and UI browsing out of proportion to its GB size.", "red"},
 	}
@@ -59,12 +62,38 @@ func (o Options) Defs(header []string) []FindingDef {
 	return defs
 }
 
+// detectPromotionChains returns a map of promotion patterns detected in repo names.
+// A promotion chain is detected when 2+ repos with the same base name exist with
+// different promotion stage suffixes (e.g., myapp-dev, myapp-staging, myapp-prod).
+func detectPromotionChains(rows []Row) map[string]bool {
+	chains := make(map[string]bool)
+	stageBases := make(map[string][]string)
+
+	for _, r := range rows {
+		name := r.Get("repo_name")
+		if matches := promotionStagePatterns.FindStringSubmatch(name); matches != nil {
+			base := promotionStagePatterns.ReplaceAllString(name, "")
+			stageBases[base] = append(stageBases[base], name)
+		}
+	}
+
+	for _, names := range stageBases {
+		if len(names) >= 2 {
+			for _, name := range names {
+				chains[name] = true
+			}
+		}
+	}
+	return chains
+}
+
 // ComputeFindings tags every row with the generic hygiene/governance signals
 // this Options describes, skipping any finding whose source column is
 // absent from header rather than mis-flagging it.
 func ComputeFindings(header []string, rows []Row, opts Options, now time.Time) {
 	hasPolicy := hasColumn(header, "cleanup_policy_keys")
 	hasActivity := hasColumn(header, "last_activity_date")
+	promotionChains := detectPromotionChains(rows)
 
 	for i := range rows {
 		r := &rows[i]
@@ -105,6 +134,10 @@ func ComputeFindings(header []string, rows []Row, opts Options, now time.Time) {
 			} else if strings.Contains(keys, "|") {
 				findings = append(findings, "multi-policy-match")
 			}
+		}
+
+		if promotionChains[name] {
+			findings = append(findings, "uses-promotion")
 		}
 
 		r.Findings = findings
