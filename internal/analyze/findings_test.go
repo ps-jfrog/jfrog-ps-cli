@@ -128,6 +128,43 @@ func defIDs(defs []FindingDef) []string {
 	return out
 }
 
+func TestComputeFindings_PromotionDetection(t *testing.T) {
+	header := []string{"repo_name", "files_count"}
+	rows := []Row{
+		mkRow(map[string]string{"repo_name": "myapp-dev", "files_count": "1"}),
+		mkRow(map[string]string{"repo_name": "myapp-staging", "files_count": "1"}),
+		mkRow(map[string]string{"repo_name": "myapp-prod", "files_count": "1"}),
+		mkRow(map[string]string{"repo_name": "otherapp-test", "files_count": "1"}),
+		mkRow(map[string]string{"repo_name": "otherapp-qa", "files_count": "1"}),
+		mkRow(map[string]string{"repo_name": "standalone-repo", "files_count": "1"}),
+	}
+	ComputeFindings(header, rows, DefaultOptions(), time.Now())
+
+	// myapp-dev/staging/prod should all have uses-promotion finding
+	if !hasFinding(rows[0], "uses-promotion") {
+		t.Errorf("expected 'uses-promotion' for myapp-dev, got %v", rows[0].Findings)
+	}
+	if !hasFinding(rows[1], "uses-promotion") {
+		t.Errorf("expected 'uses-promotion' for myapp-staging, got %v", rows[1].Findings)
+	}
+	if !hasFinding(rows[2], "uses-promotion") {
+		t.Errorf("expected 'uses-promotion' for myapp-prod, got %v", rows[2].Findings)
+	}
+
+	// otherapp-test/qa should have uses-promotion finding
+	if !hasFinding(rows[3], "uses-promotion") {
+		t.Errorf("expected 'uses-promotion' for otherapp-test, got %v", rows[3].Findings)
+	}
+	if !hasFinding(rows[4], "uses-promotion") {
+		t.Errorf("expected 'uses-promotion' for otherapp-qa, got %v", rows[4].Findings)
+	}
+
+	// standalone-repo should NOT have uses-promotion finding
+	if hasFinding(rows[5], "uses-promotion") {
+		t.Errorf("expected no 'uses-promotion' for standalone-repo, got %v", rows[5].Findings)
+	}
+}
+
 func TestHumanInt(t *testing.T) {
 	cases := map[int]string{0: "0", 500: "500", 500000: "500,000", 1000000: "1,000,000", -1234: "-1,234"}
 	for in, want := range cases {

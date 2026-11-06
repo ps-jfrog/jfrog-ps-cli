@@ -1062,8 +1062,13 @@ function renderSequenceDiagram(containerId, lanes, messages) {
   <section class="explorer" id="explorer">
     <div class="toolbar" id="tabs">
       <input id="search" type="search" placeholder="Search repository name, type, finding...">
+      <select id="repo-type"><option value="">All repository types</option></select>
       <select id="package"><option value="">All package types</option></select>
       <select id="project"><option value="">All projects</option></select>
+      <label style="display:flex; align-items:center; gap:6px; white-space:nowrap; margin:0 8px;">
+        <input id="non-empty-only" type="checkbox" style="width:16px; height:16px; cursor:pointer;">
+        <span style="cursor:pointer;">Non-empty only</span>
+      </label>
       <select id="date-field" title="Which date column the range below filters on">
         <option value="last_activity_date">Last activity</option>
         <option value="created_date">Created</option>
@@ -1104,10 +1109,13 @@ let dateFrom = "";
 let dateTo = "";
 let finding = "";
 let explanation = "";
+let nonEmptyOnly = false;
 
 const search = document.querySelector("#search");
+const repoTypeSelect = document.querySelector("#repo-type");
 const packageSelect = document.querySelector("#package");
 const projectSelect = document.querySelector("#project");
+const nonEmptyCheckbox = document.querySelector("#non-empty-only");
 const dateFieldSelect = document.querySelector("#date-field");
 const dateFromInput = document.querySelector("#date-from");
 const dateToInput = document.querySelector("#date-to");
@@ -1177,6 +1185,12 @@ function rebuildProjectOptions() {
   projectSelect.style.display = usesProjects ? "" : "none";
 }
 
+function rebuildRepoTypeOptions() {
+  const values = [...new Set(DATA.map(r => r.repo_type).filter(Boolean))].sort();
+  repoTypeSelect.innerHTML = '<option value="">All repository types</option>' +
+    values.map(v => "<option " + (v === repoType ? "selected" : "") + ">" + escapeHtml(v) + "</option>").join("");
+}
+
 // matchesDateRange compares an ISO-8601 timestamp string (or "" for "no
 // data recorded", e.g. an empty repo's blank last_activity_date) against
 // the dateFrom/dateTo range (plain "YYYY-MM-DD" values from the date
@@ -1204,6 +1218,7 @@ function visibleRows() {
     if (repoType && r.repo_type !== repoType) return false;
     if (packageValue && r.package_type !== packageValue) return false;
     if (projectValue && r.project_key !== projectValue) return false;
+    if (nonEmptyOnly && r.files_count === 0) return false;
     if (!matchesDateRange(r[dateField])) return false;
     if (finding && !(r.findings || []).includes(finding)) return false;
     if (query && !JSON.stringify(r).toLowerCase().includes(query)) return false;
@@ -1314,16 +1329,23 @@ document.querySelectorAll("#findings .finding").forEach(card =>
   }));
 
 search.addEventListener("input", render);
+repoTypeSelect.addEventListener("change", () => {
+  repoType = repoTypeSelect.value;
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.repoType === repoType));
+  rebuildPackageOptions();
+  render();
+});
 packageSelect.addEventListener("change", () => { packageValue = packageSelect.value; render(); });
 projectSelect.addEventListener("change", () => { projectValue = projectSelect.value; render(); });
+nonEmptyCheckbox.addEventListener("change", () => { nonEmptyOnly = nonEmptyCheckbox.checked; render(); });
 dateFieldSelect.addEventListener("change", () => { dateField = dateFieldSelect.value; render(); });
 dateFromInput.addEventListener("change", () => { dateFrom = dateFromInput.value; render(); });
 dateToInput.addEventListener("change", () => { dateTo = dateToInput.value; render(); });
 document.querySelector("#clear").addEventListener("click", () => {
   repoType = ""; packageValue = ""; projectValue = ""; dateField = "last_activity_date"; dateFrom = ""; dateTo = "";
-  finding = ""; explanation = "";
+  finding = ""; explanation = ""; nonEmptyOnly = false;
   search.value = ""; drawer.classList.remove("show");
-  projectSelect.value = ""; dateFieldSelect.value = "last_activity_date"; dateFromInput.value = ""; dateToInput.value = "";
+  repoTypeSelect.value = ""; projectSelect.value = ""; nonEmptyCheckbox.checked = false; dateFieldSelect.value = "last_activity_date"; dateFromInput.value = ""; dateToInput.value = "";
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.repoType === ""));
   document.querySelectorAll("#findings .finding").forEach(c => c.classList.remove("active"));
   rebuildPackageOptions();
@@ -1331,6 +1353,7 @@ document.querySelector("#clear").addEventListener("click", () => {
 });
 
 buildTabs();
+rebuildRepoTypeOptions();
 rebuildPackageOptions();
 rebuildProjectOptions();
 render();
