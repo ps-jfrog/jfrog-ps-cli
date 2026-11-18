@@ -154,8 +154,11 @@ func TestRender_WithoutInstance_NoTabsPanelsOrLeaks(t *testing.T) {
 	if strings.Contains(html, "data-report-tab=\"overview\"") {
 		t.Fatal("expected no Overview tab without instance data")
 	}
-	if strings.Count(html, "</script>") != 4 {
-		t.Fatalf("expected exactly 4 </script> tags (shared helpers + wave planning + migration workflow + main) without instance data, got %d", strings.Count(html, "</script>"))
+	if strings.Count(html, "</script>") != 5 {
+		t.Fatalf("expected exactly 5 </script> tags (shared helpers + unassigned repos + wave planning + migration workflow + main) without instance data, got %d", strings.Count(html, "</script>"))
+	}
+	if !strings.Contains(html, `data-report-tab="unassigned"`) {
+		t.Fatal("expected the Unassigned Repos tab even without instance data")
 	}
 	if !strings.Contains(html, `data-report-tab="waves"`) {
 		t.Fatal("expected the Wave Planning tab even without instance data")

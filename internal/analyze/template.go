@@ -892,6 +892,212 @@ const migrationWorkflowPanel = `
   </script>
 `
 
+// unassignedReposPanel is the "Unassigned Repos" tab's inner content: every
+// repo whose project_key is blank/"default", filterable by repo/package type
+// and by naming convention (an auto-detected "prefix-" dropdown plus a
+// free-text wildcard/regex box), exportable as CSV or JSON. Needs no Go-side
+// data of its own - same reasoning as wavePlanningPanel - so it's always
+// present, with or without an instance snapshot.
+const unassignedReposPanel = `
+  <h2>Unassigned repositories</h2>
+  <p style="color:var(--muted);margin:-4px 0 16px;max-width:820px;">
+    Repositories with no JFrog Project assignment (project_key is blank or "default"). Narrow
+    down by naming convention to spot repos that look like they belong to a project by name alone,
+    then export the filtered list to hand off for project assignment.
+  </p>
+  <div class="toolbar" id="ua-toolbar">
+    <input id="ua-search" type="search" placeholder="Search repository name, type, finding...">
+    <select id="ua-repo-type"><option value="">All repository types</option></select>
+    <select id="ua-package"><option value="">All package types</option></select>
+    <select id="ua-prefix"><option value="">All naming patterns</option></select>
+    <input id="ua-pattern" type="search" placeholder="Custom pattern (docker-*, /^team-.+/, or plain text)">
+    <button class="clear" id="ua-export-csv">Export CSV</button>
+    <button class="clear" id="ua-export-json">Export JSON</button>
+    <button class="clear" id="ua-clear">Clear filters</button>
+  </div>
+  <div class="active-filter show" id="ua-active-filter"></div>
+  <div id="unassigned-panel">
+    <div class="table-wrap">
+      <table>
+        <thead id="ua-thead"></thead>
+        <tbody id="ua-tbody"></tbody>
+      </table>
+    </div>
+    <section class="drawer" id="ua-drawer"></section>
+  </div>
+  <script>
+  function initUnassignedRepos() {
+    const panel = document.getElementById("unassigned-panel");
+    if (!panel) return;
+    const search = document.getElementById("ua-search");
+    const repoTypeSelect = document.getElementById("ua-repo-type");
+    const packageSelect = document.getElementById("ua-package");
+    const prefixSelect = document.getElementById("ua-prefix");
+    const patternInput = document.getElementById("ua-pattern");
+    const clearBtn = document.getElementById("ua-clear");
+    const exportCsvBtn = document.getElementById("ua-export-csv");
+    const exportJsonBtn = document.getElementById("ua-export-json");
+    const activeFilter = document.getElementById("ua-active-filter");
+    const thead = document.getElementById("ua-thead");
+    const tbody = document.getElementById("ua-tbody");
+    const drawer = document.getElementById("ua-drawer");
+
+    const UNASSIGNED = DATA.filter(r => !r.project_key || r.project_key === "default");
+
+    const COLUMNS = [
+      ["repo_name", "Repository"], ["package_type", "Package"], ["repo_type", "Type"],
+      ["files_count", "Files"], ["usage_gb", "Usage GB"], ["last_activity_date", "Last activity"],
+      ["created_by", "Created by"], ["last_push_by", "Modified by"],
+    ].filter(([key]) => UNASSIGNED.length === 0 || key in UNASSIGNED[0]);
+
+    // Detect naming-convention prefixes: the token before the first "-"/"_"
+    // in a repo name, kept only when shared by 2+ unassigned repos - a lone
+    // oddly-named repo isn't a "convention."
+    const prefixCounts = {};
+    UNASSIGNED.forEach(r => {
+      const m = /^([a-zA-Z0-9]+)[-_]/.exec(r.repo_name || "");
+      if (m) prefixCounts[m[1]] = (prefixCounts[m[1]] || 0) + 1;
+    });
+    const prefixes = Object.keys(prefixCounts).filter(p => prefixCounts[p] >= 2)
+      .sort((a, b) => prefixCounts[b] - prefixCounts[a] || a.localeCompare(b));
+    prefixSelect.innerHTML = '<option value="">All naming patterns</option>' +
+      prefixes.map(p => '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + "-* (" + prefixCounts[p] + ")</option>").join("");
+
+    const repoTypes = [...new Set(UNASSIGNED.map(r => r.repo_type).filter(Boolean))].sort();
+    repoTypeSelect.innerHTML = '<option value="">All repository types</option>' +
+      repoTypes.map(t => "<option>" + escapeHtml(t) + "</option>").join("");
+
+    function rebuildPackageOptions() {
+      const scoped = repoTypeSelect.value ? UNASSIGNED.filter(r => r.repo_type === repoTypeSelect.value) : UNASSIGNED;
+      const values = [...new Set(scoped.map(r => r.package_type).filter(Boolean))].sort();
+      const current = packageSelect.value;
+      packageSelect.innerHTML = '<option value="">All package types</option>' +
+        values.map(v => "<option" + (v === current ? " selected" : "") + ">" + escapeHtml(v) + "</option>").join("");
+    }
+    rebuildPackageOptions();
+
+    // wildcardToRegex: "*" matches any run of characters, "?" matches
+    // exactly one - the two wildcard characters people reach for
+    // instinctively when describing a naming convention ("docker-*").
+    function wildcardToRegex(pattern) {
+      const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
+      return new RegExp("^" + escaped + "$", "i");
+    }
+
+    // matchesPattern: a "/.../ " custom pattern is a raw regex, one with
+    // "*"/"?" is a wildcard, anything else is a plain case-insensitive
+    // substring match - whichever reads most naturally for what was typed.
+    function matchesPattern(name) {
+      const prefix = prefixSelect.value;
+      if (prefix && !new RegExp("^" + prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "[-_]").test(name)) return false;
+      const pattern = patternInput.value.trim();
+      if (!pattern) return true;
+      if (pattern.length > 2 && pattern.startsWith("/") && pattern.endsWith("/")) {
+        try { return new RegExp(pattern.slice(1, -1), "i").test(name); } catch (e) { return true; }
+      }
+      if (pattern.includes("*") || pattern.includes("?")) return wildcardToRegex(pattern).test(name);
+      return name.toLowerCase().includes(pattern.toLowerCase());
+    }
+
+    function visibleRows() {
+      const query = search.value.trim().toLowerCase();
+      return UNASSIGNED.filter(r => {
+        if (repoTypeSelect.value && r.repo_type !== repoTypeSelect.value) return false;
+        if (packageSelect.value && r.package_type !== packageSelect.value) return false;
+        if (!matchesPattern(r.repo_name || "")) return false;
+        if (query && !JSON.stringify(r).toLowerCase().includes(query)) return false;
+        return true;
+      });
+    }
+
+    function render() {
+      const rows = visibleRows();
+      thead.innerHTML = "<tr>" + COLUMNS.map(([, label]) =>
+        "<th" + (label === "Files" || label === "Usage GB" ? ' class="number"' : "") + ">" + label + "</th>").join("") +
+        "<th>Findings</th></tr>";
+
+      tbody.innerHTML = rows.map((r, index) => {
+        const cells = COLUMNS.map(([key]) => {
+          const value = r[key];
+          const numeric = key === "files_count" || key === "usage_gb";
+          const display = key === "usage_gb" ? Number(value).toLocaleString(undefined, {maximumFractionDigits: 4})
+            : numeric ? Number(value).toLocaleString() : escapeHtml(value || "");
+          return "<td" + (numeric ? ' class="number"' : "") + ">" + display + "</td>";
+        }).join("");
+        return '<tr data-index="' + index + '">' + cells + "<td>" + renderBadges(r.findings) + "</td></tr>";
+      }).join("");
+
+      tbody.querySelectorAll("tr").forEach(row =>
+        row.addEventListener("click", () => showDetails(rows[Number(row.dataset.index)])));
+
+      activeFilter.textContent = rows.length.toLocaleString() + " of " + UNASSIGNED.length.toLocaleString() + " unassigned repositories shown";
+    }
+
+    function showDetails(row) {
+      const pairs = Object.entries(row).filter(([key]) => key !== "findings");
+      const detailRows = pairs.map(([key, value]) =>
+        "<div><dt>" + escapeHtml(prettyLabel(key)) + "</dt><dd>" +
+        escapeHtml(value === "" || value === undefined ? "None" : value) + "</dd></div>").join("");
+      drawer.innerHTML = "<h3>" + escapeHtml(row.repo_name) + "</h3>" +
+        '<dl class="drawer-grid">' + detailRows +
+        "<div><dt>Findings</dt><dd>" + (renderBadges(row.findings) || "None") + "</dd></div></dl>";
+      drawer.classList.add("show");
+      drawer.scrollIntoView({behavior: "smooth", block: "nearest"});
+    }
+
+    function downloadBlob(content, mime, filename) {
+      const blob = new Blob([content], {type: mime});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
+    const EXPORT_FIELDS = ["repo_name", "package_type", "repo_type", "files_count", "usage_gb",
+      "created_date", "created_by", "last_push_date", "last_push_by", "last_activity_date"]
+      .filter(key => UNASSIGNED.length === 0 || key in UNASSIGNED[0]).concat(["findings"]);
+
+    exportCsvBtn.addEventListener("click", () => {
+      const csvRows = [EXPORT_FIELDS];
+      visibleRows().forEach(r => csvRows.push(EXPORT_FIELDS.map(key =>
+        key === "findings" ? (r.findings || []).join("|") : (r[key] !== undefined && r[key] !== null ? r[key] : ""))));
+      const csv = csvRows.map(row => row.map(cell => {
+        const s = String(cell === undefined || cell === null ? "" : cell);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      }).join(",")).join("\n");
+      downloadBlob(csv, "text/csv;charset=utf-8;", "unassigned-repos.csv");
+    });
+
+    exportJsonBtn.addEventListener("click", () => {
+      const rows = visibleRows().map(r => {
+        const out = {};
+        EXPORT_FIELDS.forEach(key => { out[key] = key === "findings" ? (r.findings || []) : r[key]; });
+        return out;
+      });
+      downloadBlob(JSON.stringify(rows, null, 2), "application/json", "unassigned-repos.json");
+    });
+
+    search.addEventListener("input", render);
+    repoTypeSelect.addEventListener("change", () => { rebuildPackageOptions(); render(); });
+    packageSelect.addEventListener("change", render);
+    prefixSelect.addEventListener("change", render);
+    patternInput.addEventListener("input", render);
+    clearBtn.addEventListener("click", () => {
+      search.value = ""; repoTypeSelect.value = ""; packageSelect.value = ""; prefixSelect.value = ""; patternInput.value = "";
+      drawer.classList.remove("show");
+      rebuildPackageOptions();
+      render();
+    });
+
+    render();
+  }
+  </script>
+`
+
 const pageTemplate = `<!doctype html>
 <html lang="en">
 <head>
@@ -1357,6 +1563,7 @@ rebuildRepoTypeOptions();
 rebuildPackageOptions();
 rebuildProjectOptions();
 render();
+initUnassignedRepos();
 initWavePlanning();
 initMigrationWorkflow();
 

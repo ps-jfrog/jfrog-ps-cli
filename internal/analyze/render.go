@@ -89,6 +89,8 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 	// ordered last (Wave Planning feeds Migration Workflow's wave-based
 	// scope, so Migration Workflow follows it).
 	reposNav := fmt.Sprintf(`<button class="report-tab%s" data-report-tab="repos">Repos</button>`, reposActiveClass)
+	unassignedNav := `<button class="report-tab" data-report-tab="unassigned">Unassigned Repos</button>`
+	unassignedPanel := "\n  <section class=\"report-panel\" data-report-panel=\"unassigned\">\n" + unassignedReposPanel + "\n  </section>\n"
 	wavesNav := `<button class="report-tab" data-report-tab="waves">Wave Planning</button>`
 	wavesPanel := "\n  <section class=\"report-panel\" data-report-panel=\"waves\">\n" + wavePlanningPanel + "\n  </section>\n"
 	migrationNav := `<button class="report-tab" data-report-tab="migration">Migration Workflow</button>`
@@ -128,11 +130,11 @@ func Render(header []string, rows []Row, ro RenderOptions) (string, error) {
 		relationshipsNav := `<button class="report-tab" data-report-tab="relationships">Relationships</button>`
 		relationshipsPanel := "\n  <section class=\"report-panel\" data-report-panel=\"relationships\">\n" + relationshipsContent + "\n  </section>\n"
 
-		navTabsHTML = overviewNav + reposNav + navTabsHTML + allFindingsNav + relationshipsNav + wavesNav + migrationNav
-		extraPanelsHTML = overviewPanel + extraPanelsHTML + allFindingsPanel + relationshipsPanel + wavesPanel + migrationPanel
+		navTabsHTML = overviewNav + reposNav + unassignedNav + navTabsHTML + allFindingsNav + relationshipsNav + wavesNav + migrationNav
+		extraPanelsHTML = overviewPanel + unassignedPanel + extraPanelsHTML + allFindingsPanel + relationshipsPanel + wavesPanel + migrationPanel
 	} else {
-		navTabsHTML = reposNav + wavesNav + migrationNav
-		extraPanelsHTML = wavesPanel + migrationPanel
+		navTabsHTML = reposNav + unassignedNav + wavesNav + migrationNav
+		extraPanelsHTML = unassignedPanel + wavesPanel + migrationPanel
 	}
 
 	var headerInstanceHTML string
