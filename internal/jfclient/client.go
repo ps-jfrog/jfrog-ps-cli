@@ -136,6 +136,13 @@ func checkWriteAllowed(method, path string) error {
 // method. body, if non-nil, is marshaled as JSON unless it is a []byte or
 // string, which are sent as-is (for AQL / plain-text payloads).
 func (c *Client) Do(method, path string, body interface{}) (*Response, error) {
+	return c.DoAccept(method, path, body, "application/json")
+}
+
+// DoAccept is Do with an explicit Accept header, for endpoints that reply
+// with a non-JSON body (e.g. Artifactory's repository update, which answers
+// in text/plain and returns 406 if only application/json is accepted).
+func (c *Client) DoAccept(method, path string, body interface{}, accept string) (*Response, error) {
 	if err := checkWriteAllowed(method, path); err != nil {
 		return nil, err
 	}
@@ -166,7 +173,7 @@ func (c *Client) Do(method, path string, body interface{}) (*Response, error) {
 	if reader != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
-	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Accept", accept)
 	c.setAuth(req)
 
 	resp, err := c.HTTPClient.Do(req)

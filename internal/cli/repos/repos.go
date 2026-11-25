@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"jfrogpscli/internal/config"
 	"jfrogpscli/internal/output"
@@ -34,6 +35,8 @@ func Run(args []string) int {
 		return runDiff(args[1:])
 	case "sync-config":
 		return runSyncConfig(args[1:])
+	case "resolve-merge-diff":
+		return runResolveMergeDiff(args[1:])
 	case "delete":
 		return runDelete(args[1:])
 	case "check-exists":
@@ -54,6 +57,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, "  list         List repositories on a single server")
 	fmt.Fprintln(os.Stderr, "  diff         Diff repositories between source and target, optionally create missing ones on target")
 	fmt.Fprintln(os.Stderr, "  sync-config  Compare and optionally sync full repository configuration for repos present on both servers")
+	fmt.Fprintln(os.Stderr, "  resolve-merge-diff  Make target repo properties match source for repos listed in a transfer-config-merge conflicts CSV, with before/after reports")
 	fmt.Fprintln(os.Stderr, "  delete       Delete repositories listed in a file")
 	fmt.Fprintln(os.Stderr, "  check-exists Check whether repositories listed in a file exist on a server")
 	fmt.Fprintln(os.Stderr, "  create-virtual  Create/update two-member (local+remote) virtual repos from a CSV file")
@@ -429,4 +433,105 @@ func runCreateVirtual(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func runResolveMergeDiff(args []string) int {
+	fs := flag.NewFlagSet("repos resolve-merge-diff", flag.ContinueOnError)
+	srcFlags := config.Register(fs, "source-")
+	tgtFlags := config.Register(fs, "target-")
+	csvPath := fs.String("csv", "", "Conflicts CSV written by 'jf rt transfer-config-merge' (required)")
+	reportDir := fs.String("report-dir", ".", "Directory for the before/after report CSVs")
+	dryRun := fs.Bool("dry-run", true, "Write the diff report only; do not update the target")
+	ok, code := parseOrHelp(fs, args)
+	if !ok {
+		return code
+	}
+	if *csvPath == "" {
+		fmt.Fprintln(os.Stderr, "error: --csv is required")
+		return 1
+	}
+
+	f, err := os.Open(*csvPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	keys, err := repos.ParseConflictsCSV(f)
+	f.Close()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if len(keys) == 0 {
+		fmt.Println("No Repository rows in the conflicts CSV; nothing to do.")
+		return 0
+	}
+
+	source, err := srcFlags.Resolve()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	target, err := tgtFlags.Resolve()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	if err := os.MkdirAll(*reportDir, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+
+	bar := progress.New()
+	before := repos.DiffRepos(source, target, keys, func(done, total int) { bar.Update("Diffing repos", done, total) })
+	beforePath := filepath.Join(*reportDir, "resolve-merge-diff-before.csv")
+	if err := writeReport(beforePath, before); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	pending := repos.Pending(before)
+	fmt.Printf("Repositories in CSV: %d; with differences or errors: %d\nReport: %s\n", len(keys), len(pending), beforePath)
+	if len(pending) == 0 {
+		fmt.Println("All repositories already match.")
+		return 0
+	}
+
+	if *dryRun {
+		output.DryRunBanner(os.Stdout, fmt.Sprintf("update %d repositories on target", len(pending)))
+		return 0
+	}
+
+	failed := 0
+	results := repos.ApplyMergeDiffs(target, before, false, func(done, total int) { bar.Update("Updating repos", done, total) })
+	for _, r := range results {
+		if r.Err != nil {
+			fmt.Fprintf(os.Stderr, "failed to update %s on target: %v\n", r.Key, r.Err)
+			failed++
+			continue
+		}
+		fmt.Printf("updated %s on target\n", r.Key)
+	}
+
+	after := repos.DiffRepos(source, target, keys, func(done, total int) { bar.Update("Verifying repos", done, total) })
+	afterPath := filepath.Join(*reportDir, "resolve-merge-diff-after.csv")
+	if err := writeReport(afterPath, after); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	remaining := repos.Pending(after)
+	fmt.Printf("After update: %d of %d repositories still differ or errored. Report: %s\n", len(remaining), len(keys), afterPath)
+	if failed > 0 || len(remaining) > 0 {
+		return 1
+	}
+	fmt.Println("All differences resolved.")
+	return 0
+}
+
+func writeReport(path string, diffs []repos.RepoDiff) error {
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return repos.WriteDiffReport(f, diffs)
 }

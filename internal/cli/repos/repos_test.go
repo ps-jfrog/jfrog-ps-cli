@@ -57,3 +57,9 @@ func TestRun_CreateVirtualMissingFile(t *testing.T) {
 		t.Fatalf("expected exit code 1 when --file is missing, got %d", code)
 	}
 }
+
+func TestRun_ResolveMergeDiffMissingCSV(t *testing.T) {
+	if code := Run([]string{"resolve-merge-diff"}); code != 1 {
+		t.Fatalf("expected exit code 1 when --csv is missing, got %d", code)
+	}
+}

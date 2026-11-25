@@ -14,6 +14,7 @@ are single-server.
 | [`list`](#list) | List repositories on one server, optionally filtered by type |
 | [`diff`](#diff) | Find repos missing on target vs. source, optionally create them |
 | [`sync-config`](#sync-config) | Push source config to target for repos present on both, where they differ |
+| [`resolve-merge-diff`](#resolve-merge-diff) | Make target repo properties match source for repos in a `transfer-config-merge` conflicts CSV, with before/after reports |
 | [`delete`](#delete) | Bulk-delete repositories listed in a file |
 | [`check-exists`](#check-exists) | Check whether repositories listed in a file exist on a server |
 | [`create-virtual`](#create-virtual) | Create/update two-member (local+remote) virtual repos from a CSV file |
@@ -118,6 +119,16 @@ sequenceDiagram
         end
     end
 ```
+
+---
+
+## `resolve-merge-diff`
+
+**What it does:** Reads the repository rows of a `jf rt transfer-config-merge` conflicts CSV, reports the differing properties, and (when applying) updates only those properties on the target to the source value, then re-diffs to prove the result. Never creates or deletes. Full guide: [resolve-transfer-config-merge-diff.md](resolve-transfer-config-merge-diff.md).
+
+**Key flags:** `--csv` (required), `--report-dir`, `--dry-run` (default `true`), uses `--source-*`/`--target-*` server flags
+
+**Safety notes:** dry-run defaults to true and only writes the before report; ignored keys (`url`, `password`, `description`, ...) are never touched.
 
 ---
 
