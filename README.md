@@ -64,10 +64,28 @@ Pushing a `v*` tag (e.g. `v1.2.3`) triggers
 `go vet`/`go test`, then goreleaser builds all 6 platform/arch binaries and
 publishes them to a GitHub Release.
 
-```sh
-git tag v1.2.3
-git push origin v1.2.3
-```
+1. Merge the PR to `main`, then make sure your local `main` has it and the tag
+   will point at the merge commit:
+
+   ```sh
+   git checkout main && git pull
+   git log --oneline -1     # should be the merged PR
+   git tag -l v1.2.3        # must print nothing (tag not used yet)
+   ```
+
+2. Tag and push:
+
+   ```sh
+   git tag -a v1.2.3 -m "v1.2.3"
+   git push origin v1.2.3
+   ```
+
+3. Watch the run under the repo's **Actions** tab (Release workflow). The
+   GitHub Release at `.../releases/tag/v1.2.3` only appears when the GoReleaser
+   job at the end finishes, a few minutes after the push.
+
+To undo a bad tag: `git push origin :refs/tags/v1.2.3`,
+`git tag -d v1.2.3`, and delete the GitHub Release if one was created.
 
 The tag is baked into the binary at build time (`-X main.version={{.Tag}}` in
 `.goreleaser.yaml`), so it matches exactly what the release shows:
@@ -78,6 +96,51 @@ jfps -v          # or --version / version
 ```
 
 A binary built without goreleaser (plain `go build`) reports `dev`.
+
+### What a release exposes
+
+Tagged binaries only run what is promoted in `cmd/jfps/main.go`: whole command
+groups in `stableCommands` (today `discover`) and single subcommands in
+`stableSubcommands` (today `repos resolve-merge-diff`). Everything else is
+hidden and refused ("not available in this release yet"), and release builds
+refuse every write (PUT/PATCH/DELETE, and POST) except endpoints a promoted
+command explicitly opts in with `jfclient.AllowWrite`. A plain `go build`
+(version `dev`) has no such limits. Details and the checklist for promoting a
+command are in [`.claude/skills/jfps/SKILL.md`](.claude/skills/jfps/SKILL.md).
+
+## Installing a release (macOS)
+
+Download the archive for your Mac's chip from the repo's **Releases** page
+(`https://github.com/ps-jfrog/jfrog-ps-cli/releases`), for example
+`jfps_1.9.1_darwin_arm64.tar.gz`:
+
+```sh
+uname -m    # arm64 = Apple Silicon -> darwin_arm64 ; x86_64 = Intel -> darwin_x86_64
+```
+
+```sh
+cd ~/Downloads
+tar -xzf jfps_1.9.1_darwin_arm64.tar.gz       # contains the binary + README.md
+xattr -d com.apple.quarantine jfps-darwin-arm64 2>/dev/null   # browser downloads are quarantined; the binary is not signed
+chmod +x jfps-darwin-arm64
+sudo mv jfps-darwin-arm64 /usr/local/bin/jfps
+jfps --version                                # jfps version v1.9.1
+```
+
+The binary inside the archive is named `jfps-darwin-arm64` or
+`jfps-darwin-x86_64`. If the repo is private, download with the GitHub CLI
+instead of the browser (after `gh auth login`):
+
+```sh
+gh release download v1.9.1 --repo ps-jfrog/jfrog-ps-cli --pattern '*darwin_arm64*'
+```
+
+To verify the download, compare `shasum -a 256 <archive>` with the matching
+line in `checksums.txt` on the same release page. On Linux or Windows pick the
+`linux_*` or `windows_*` archive (`.zip` on Windows) instead.
+
+To upgrade, repeat the steps with the new version. To get commands that are
+not yet promoted in releases, build from source (see [Building](#building)).
 
 ## Testing
 
