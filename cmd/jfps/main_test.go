@@ -76,7 +76,7 @@ func TestRunTaggedBuildOnlyAllowsStableCommands(t *testing.T) {
 	}
 
 	for _, name := range registry.Names() {
-		if stableCommands[name] {
+		if stableCommands[name] || len(stableSubcommands[name]) > 0 {
 			continue
 		}
 		if code := run([]string{name}); code != 1 {
@@ -95,7 +95,7 @@ func TestPrintUsageTaggedBuildHidesUnstableCommands(t *testing.T) {
 		}
 	}
 	for _, name := range registry.Names() {
-		if stableCommands[name] {
+		if stableCommands[name] || len(stableSubcommands[name]) > 0 {
 			continue
 		}
 		if strings.Contains(out, "  "+name+" ") {
@@ -153,4 +153,51 @@ func captureStderr(t *testing.T, fn func()) string {
 		t.Fatalf("read pipe: %v", err)
 	}
 	return string(buf)
+}
+
+func TestTaggedBuildRunsOnlyPromotedSubcommands(t *testing.T) {
+	withVersion(t, "v1.2.3")
+
+	// Promoted subcommand reaches its own handler (-h exits 0).
+	if code := run([]string{"repos", "resolve-merge-diff", "-h"}); code != 0 {
+		t.Errorf("expected promoted subcommand to run in a tagged build, got exit code %d", code)
+	}
+	// Group help lists only released subcommands, exit 0.
+	out := captureStderr(t, func() {
+		if code := run([]string{"repos"}); code != 0 {
+			t.Errorf("expected group help exit 0, got %d", code)
+		}
+	})
+	if !strings.Contains(out, "resolve-merge-diff") || strings.Contains(out, "sync-config") {
+		t.Errorf("group help should list only released subcommands, got:\n%s", out)
+	}
+	// Non-promoted subcommands of the same group are refused.
+	for _, sub := range []string{"delete", "diff", "sync-config", "create-virtual", "list"} {
+		if code := run([]string{"repos", sub, "-h"}); code != 1 {
+			t.Errorf("expected unpromoted %q to be refused in a tagged build, got exit code %d", sub, code)
+		}
+	}
+	// A different group stays hidden.
+	if code := run([]string{"access", "list"}); code != 1 {
+		t.Errorf("expected access to stay refused, got %d", code)
+	}
+	// Usage lists repos with only the released subcommands.
+	usage := captureStderr(t, printUsage)
+	if !strings.Contains(usage, "Released subcommands only: resolve-merge-diff") {
+		t.Errorf("tagged usage should show released repos subcommands, got:\n%s", usage)
+	}
+}
+
+func TestStableSubcommandsAreRealAndNotWholeGroups(t *testing.T) {
+	for group, subs := range stableSubcommands {
+		if stableCommands[group] {
+			t.Errorf("%q is in both stableCommands and stableSubcommands", group)
+		}
+		if len(subs) == 0 {
+			t.Errorf("%q has an empty stableSubcommands entry", group)
+		}
+		if _, ok := registry.Get(group); !ok {
+			t.Errorf("stableSubcommands names unregistered group %q", group)
+		}
+	}
 }
