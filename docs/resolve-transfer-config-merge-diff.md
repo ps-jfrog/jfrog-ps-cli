@@ -41,7 +41,7 @@ CSV will show up as `match` here: they were noise.
 
 ```
 jfps repos resolve-merge-diff --csv <conflicts.csv> \
-  --source-server <profile> --target-server <profile> \
+  --source-server-id <jf-server-id> --target-server-id <jf-server-id> \
   [--report-dir <dir>] [--dry-run=false]
 ```
 
@@ -50,7 +50,13 @@ jfps repos resolve-merge-diff --csv <conflicts.csv> \
 | `--csv` | Conflicts CSV from `jf rt transfer-config-merge` (required) |
 | `--report-dir` | Where the report CSVs are written (default `.`) |
 | `--dry-run` | Default `true`: only writes the before report. `--dry-run=false` applies updates |
-| `--source-*` / `--target-*` | Standard server flags: `server`, `server-id`, `url`, `token`, `user`, `password`, `insecure` |
+| `--source-*` / `--target-*` | Standard server flags: `server-id`, `url`, `token`, `user`, `password`, `insecure`, `server` |
+
+Use `--source-server-id`/`--target-server-id` to reuse servers already set up
+with the JFrog CLI (`jf c show` lists them; `jf` must be on PATH). `--server`
+reads a saved profile from `~/.jfps/servers.json`, which `jfps` has no command
+to create, so it fails with `no saved server profile` unless you wrote that
+file by hand.
 
 Exit code is `0` only if every repo matches at the end; any update failure or
 remaining difference exits `1`.
@@ -62,7 +68,7 @@ remaining difference exits `1`.
 ```
 $ jfps repos resolve-merge-diff \
     --csv testing/transfer-config-conflicts-2026-11-18.12-41-45.csv \
-    --source-server old-rt --target-server new-rt --report-dir testing/report
+    --source-server-id old-rt --target-server-id new-rt --report-dir testing/report
 Repositories in CSV: 249; with differences or errors: 249
 Report: testing/report/resolve-merge-diff-before.csv
 [DRY RUN] Would update 249 repositories on target. Re-run with --dry-run=false to apply.
@@ -85,7 +91,7 @@ repo could not be read on one side (for example it was deleted).
 ```
 $ jfps repos resolve-merge-diff \
     --csv testing/transfer-config-conflicts-2026-11-18.12-41-45.csv \
-    --source-server old-rt --target-server new-rt --report-dir testing/report \
+    --source-server-id old-rt --target-server-id new-rt --report-dir testing/report \
     --dry-run=false
 updated airway-cosmo-vl-docker-dev-local on target
 ...
@@ -103,6 +109,59 @@ Re-run `jf rt transfer-config-merge` (without `--dry-run` side effects on
 repos that now match); the repository rows in the new conflicts CSV should be
 gone. `Project` rows (for example `storage_quota_bytes`, or the `jmgr`/`jfmgr`
 key and name clashes) are not handled by this command and need manual review.
+
+## Testing before a release
+
+Run this before merging a change to `main` and tagging (for example `v1.9.1`).
+It exercises the real release behaviour (release-only gates) against two real
+servers: here `psazuse` (source) and `psemea` (target). **It updates repos on
+the target**; use a non-production target, and keep the before report.
+
+```bash
+# 0. A release-like binary: any version other than "dev" turns on the release
+#    gates (hidden commands, writes blocked unless explicitly opted in).
+go build -ldflags "-X main.version=v1.9.1-rc1" -o /tmp/jfps-rc ./cmd/jfps
+/tmp/jfps-rc --version                      # jfps version v1.9.1-rc1
+/tmp/jfps-rc repos                          # lists only resolve-merge-diff
+/tmp/jfps-rc repos sync-config -h           # must be refused (exit 1)
+
+# 1. Pick N repos per package type that exist on both servers.
+jf api /artifactory/api/repositories --server-id=psazuse 2>/dev/null > src.json
+jf api /artifactory/api/repositories --server-id=psemea  2>/dev/null > tgt.json
+REPOS=$(python3 scripts/pick-test-repos.py src.json tgt.json --per-type 2)
+#   --offset 2 picks a fresh sample if an earlier run already aligned the first two.
+
+# 2. Generate the conflicts CSV (reads only repos in the list; no projects).
+jf rt transfer-config-merge psazuse psemea --include-repos "$REPOS" --exclude-projects "*"
+#   Prints "Please review the report available at ~/.jfrog/logs/transfer-config-conflicts-<ts>.csv"
+cp ~/.jfrog/logs/transfer-config-conflicts-<ts>.csv conflicts.csv
+
+# 3. Dry run (default): writes the before report only.
+/tmp/jfps-rc repos resolve-merge-diff --csv conflicts.csv \
+  --source-server-id psazuse --target-server-id psemea --report-dir report
+
+# 4. Review report/resolve-merge-diff-before.csv, then apply.
+/tmp/jfps-rc repos resolve-merge-diff --csv conflicts.csv \
+  --source-server-id psazuse --target-server-id psemea --report-dir report \
+  --dry-run=false
+
+# 5. Check report/resolve-merge-diff-after.csv.
+grep -v ",match$" report/resolve-merge-diff-after.csv
+```
+
+**Pass criteria:** step 0 shows only `resolve-merge-diff` under `repos`;
+step 4 prints `updated <repo> on target` lines and no `write/delete operations
+are disabled in this build` error (that error would mean the write opt-in is
+broken); and the after report shows `match` for every repo except the known
+limitations below. Then merge and tag.
+
+Results of this procedure on 2026-11-26 (31 repos, new sample, offset 2): 22 had
+conflicts, 21 resolved, 1 remaining (`green-oci-dev-local`, empty `environments`).
+An earlier run (46 repos, offset 0) resolved 27 of 32. Cases worth knowing:
+a virtual repo's `repositories` list is also aligned (`sv-conan-virtual` lost
+the member `sv-conan-remote`, as the source has only `sv-conan-local`), and a
+remote repo's `curated`/`passThrough`/`listRemoteFolderItems` flags are pushed
+as in the source.
 
 ## HTTP operations used
 
