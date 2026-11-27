@@ -128,3 +128,30 @@ func TestErrorOnNon2xx(t *testing.T) {
 		t.Fatalf("expected Error() to return non-nil for 404")
 	}
 }
+
+func TestAllowWrite_OnlyExemptsExactMethodAndPrefix(t *testing.T) {
+	WritesDisabled = true
+	old := writeRules
+	t.Cleanup(func() { writeRules = old })
+	writeRules = nil
+
+	const path = "/artifactory/api/repositories/my-repo"
+	if err := checkWriteAllowed(http.MethodPost, path); err == nil {
+		t.Fatal("POST must be refused before AllowWrite")
+	}
+	AllowWrite(http.MethodPost, "/artifactory/api/repositories/")
+	if err := checkWriteAllowed(http.MethodPost, path); err != nil {
+		t.Fatalf("POST on allowed prefix should pass: %v", err)
+	}
+	for _, c := range []struct{ m, p string }{
+		{http.MethodPut, path},                           // other method, same path
+		{http.MethodDelete, path},                        // other method, same path
+		{http.MethodPatch, path},                         // other method, same path
+		{http.MethodPost, "/artifactory/api/security/x"}, // other path
+		{http.MethodPost, "/artifactory/api/repositoriesX"},
+	} {
+		if err := checkWriteAllowed(c.m, c.p); err == nil {
+			t.Errorf("%s %s must stay refused", c.m, c.p)
+		}
+	}
+}

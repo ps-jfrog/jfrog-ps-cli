@@ -102,19 +102,29 @@ of any per-command `--dry-run` flag:
   plain local `go build ./cmd/jfps` (reports `-v` as `dev`) re-enables
   writes, so untested commands can still be exercised for real locally.
 - **Tagged release binaries only show/run commands that have been fully
-  tested against a real JPD.** `cmd/jfps/main.go`'s `stableCommands` map is
-  the allowlist — as of this writing it's just `{"discover": true}`. Every
-  other command group is still fully built into the binary and runs fine in
-  a dev build, but a tagged binary hides it from `jfps help`/`jfps -h` and
-  refuses to run it (`jfps: "access" is not available in this release yet
-  (still under test)`). Promoting a command means adding it to
-  `stableCommands`, once someone has actually verified it end-to-end.
+  tested against a real JPD.** `cmd/jfps/main.go` has two allowlists:
+  `stableCommands` (whole command groups) and `stableSubcommands` (individual
+  subcommands of an otherwise-hidden group). Everything else is still fully
+  built into the binary and runs fine in a dev build, but a tagged binary
+  hides it from `jfps help`/`jfps -h` and refuses to run it (`jfps:
+  "access" is not available in this release yet (still under test)`). For a
+  partially-released group, `jfps <group>` lists only the released
+  subcommands and any other subcommand is refused. As of this writing:
+  `stableCommands` = `{"discover"}`, `stableSubcommands` =
+  `{"repos": {"resolve-merge-diff"}}`.
+- **Promoting a command is not the same as enabling its writes.** The
+  writes gate above applies to tagged binaries regardless of promotion. A
+  promoted command that must write opts in per endpoint with
+  `jfclient.AllowWrite(method, pathPrefix)`, called only after the user has
+  asked to apply (after the `--dry-run` check). Only that exact method and
+  path prefix is exempted; every other mutating call stays refused.
+  `repos resolve-merge-diff` allows only `POST /artifactory/api/repositories/`.
 
-Net effect: **a downloaded release binary today can only run `discover`**
-(itself read-only, so the writes gate never even matters for it). To use
-any other command group — `access`, `cleanup`, `repos`, `projects`,
-`replication`, `federation`, `compare`, `xray` — build from source
-(`go build -o jfps ./cmd/jfps`) rather than downloading a release asset.
+Net effect: **a downloaded release binary can run `discover` and `repos
+resolve-merge-diff`.** To use any other command group — `access`, `cleanup`,
+`projects`, `replication`, `federation`, `compare`, `xray`, or the other
+`repos` subcommands — build from source (`go build -o jfps ./cmd/jfps`)
+rather than downloading a release asset.
 
 ## Command groups
 
@@ -123,7 +133,7 @@ any other command group — `access`, `cleanup`, `repos`, `projects`,
 | `jfps discover` | One command, flags select the piece(s) (not subcommands): repo storage/activity/cleanup-policy/project reporting; instance-wide versions/storage/auth/signing-keys/users/groups/permissions/projects/replication/federation/platform-config/Xray-config; self-contained HTML audit | No — fully read-only | **Yes** |
 | `jfps access` | Users, groups, permission targets: list/audit/effective-permissions, create, grant-path, add/remove repos, backup, restore (from a backup dir, additive-only), bulk delete | Yes (dry-run default) | No (dev builds only) |
 | `jfps cleanup` | AQL-driven artifact deletion, bulk repo deletion, inactive-user pruning, empty-folder pruning, source-vs-target reconciliation, Docker tag cleanup, Xray-gated remote-cache cleanup | Yes (dry-run default) | No |
-| `jfps repos` | List, check-exists, diff (create-missing-only), full-config sync, create-virtual (from a CSV spec), bulk delete | List/check-exists: no. Diff/sync/create-virtual/delete: yes | No |
+| `jfps repos` | List, check-exists, diff (create-missing-only), full-config sync, resolve-merge-diff (align target repo properties to source from a `transfer-config-merge` conflicts CSV, with before/after reports), create-virtual (from a CSV spec), bulk delete | List/check-exists: no. Diff/sync/resolve-merge-diff/create-virtual/delete: yes | Only `resolve-merge-diff` (others: dev builds only) |
 | `jfps projects` | List, diff (create missing / optionally delete extra), bulk delete | List: no. Diff/delete: yes | No |
 | `jfps replication` | List/check, create, delete, disable, backup, restore push replication | Yes (dry-run default) | No |
 | `jfps federation` | Convert to/from federated, member health check, config resync | Yes (dry-run default) | No |
@@ -131,7 +141,8 @@ any other command group — `access`, `cleanup`, `repos`, `projects`,
 | `jfps xray` | Index status/toggle/reindex, JAS/Contextual-Analysis toggle, report generation (date-chunked, CSV export, deployer/build-gitrepo segregation, upload-to-repo)/list/delete, policy/watch/ignore-rule sync | Mixed — check subcommand | No |
 
 "Stable in a tagged release" means it's in `cmd/jfps/main.go`'s
-`stableCommands` allowlist (see [Safety model](#safety-model--read-before-running-anything-mutating)
+`stableCommands` allowlist (whole group) or `stableSubcommands` (single
+subcommand) (see [Safety model](#safety-model--read-before-running-anything-mutating)
 above) — everything else still works fully in a **dev build**
 (`go build -o jfps ./cmd/jfps`), just not in a downloaded release binary yet.
 
@@ -291,10 +302,21 @@ git push origin v1.2.3
 ```
 
 Before tagging, check whether any newly-tested command should move from
-"dev build only" to generally available: add it to the `stableCommands` map
-in `cmd/jfps/main.go`. Nothing else needs to change — the command's code is
-already fully built into every binary; that map only controls whether a
-tagged release shows/runs it (see [Safety model](#safety-model--read-before-running-anything-mutating)).
+"dev build only" to generally available:
+
+- **Whole group:** add it to the `stableCommands` map in `cmd/jfps/main.go`.
+- **One subcommand of a group:** add it to `stableSubcommands`
+  (`"repos": {"resolve-merge-diff": true}`); the group's other subcommands
+  stay hidden and refused. A group must not be in both maps.
+- **If the command writes:** list every HTTP method + path it uses, and have
+  it call `jfclient.AllowWrite(method, pathPrefix)` for each write, after its
+  `--dry-run` check. Reads (GET) never need this. Without it the release
+  build refuses the write even though the command is promoted.
+- Update the tests in `cmd/jfps/main_test.go` and `internal/jfclient`, and the
+  "Stable in a tagged release?" column above.
+
+The command's code is already built into every binary; the maps only control
+whether a tagged release shows/runs it (see [Safety model](#safety-model--read-before-running-anything-mutating)).
 
 ## Testing
 

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -118,15 +119,51 @@ var readOnlyPostPaths = map[string]bool{
 	"/xray/api/v1/reports/exposures":       true,
 }
 
+// writeRule exempts one HTTP method on one path prefix from the write guard.
+type writeRule struct{ method, pathPrefix string }
+
+var (
+	writeRulesMu sync.Mutex
+	writeRules   []writeRule
+)
+
+// AllowWrite exempts requests with exactly this HTTP method and a path
+// starting with pathPrefix from the WritesDisabled guard for the rest of the
+// process. It is the narrow, per-endpoint way for a command that has been
+// promoted for use in tagged releases to perform its one required write,
+// without lifting the guard for every other mutating call. A command must
+// call it only once the user has explicitly asked to apply changes (i.e.
+// after its --dry-run check), never at startup.
+func AllowWrite(method, pathPrefix string) {
+	writeRulesMu.Lock()
+	defer writeRulesMu.Unlock()
+	writeRules = append(writeRules, writeRule{method, pathPrefix})
+}
+
+func writeAllowedByRule(method, path string) bool {
+	writeRulesMu.Lock()
+	defer writeRulesMu.Unlock()
+	for _, r := range writeRules {
+		if r.method == method && strings.HasPrefix(path, r.pathPrefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // checkWriteAllowed refuses any request that would mutate or delete state on
 // the JPD while writesDisabled is set. GET is always allowed; PUT/PATCH/
 // DELETE are always refused; POST is refused unless it targets a known
-// read-only endpoint (see readOnlyPostPaths).
+// read-only endpoint (see readOnlyPostPaths), unless a command opted that
+// exact method+path prefix in via AllowWrite.
 func checkWriteAllowed(method, path string) error {
 	if !WritesDisabled || method == http.MethodGet {
 		return nil
 	}
 	if method == http.MethodPost && readOnlyPostPaths[path] {
+		return nil
+	}
+	if writeAllowedByRule(method, path) {
 		return nil
 	}
 	return fmt.Errorf("operation not supported: write/delete operations are disabled in this build (%s %s)", method, path)

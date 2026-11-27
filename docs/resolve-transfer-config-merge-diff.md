@@ -104,6 +104,19 @@ repos that now match); the repository rows in the new conflicts CSV should be
 gone. `Project` rows (for example `storage_quota_bytes`, or the `jmgr`/`jfmgr`
 key and name clashes) are not handled by this command and need manual review.
 
+## HTTP operations used
+
+| Operation | Endpoint | When | Write? |
+|---|---|---|---|
+| GET | `/artifactory/api/v2/repositories/<key>` (source, target) | every run, before and after | no |
+| GET | `/artifactory/api/repositories/<key>` | only if v2 returns 404 | no |
+| POST | `/artifactory/api/repositories/<key>` (target only) | only with `--dry-run=false` | **yes** |
+
+No PUT, PATCH or DELETE is used, and nothing is created or deleted. Release
+builds block writes by default; this one POST (method and path prefix
+`/artifactory/api/repositories/`) is the only exemption, so every other
+mutating call in `jfps` stays blocked.
+
 ## Known limitations (seen in testing)
 
 Verified with 46 repos (2 per package type) from `psazuse` to `psemea`: 32 had
@@ -124,8 +137,10 @@ Re-running is safe: only repos that still differ are touched.
 
 ## Notes
 
-- Dev builds only: like other write commands, this is enabled in `dev` builds
-  (`go build ./cmd/jfps`); tagged releases keep writes disabled.
+- Released builds: this subcommand is promoted in `stableSubcommands`
+  (`cmd/jfps/main.go`), so a downloaded release binary runs it; the rest of
+  `jfps repos` is still dev-build-only. Its single write is opted out of the
+  release write guard (`jfclient.AllowWrite`) and only after `--dry-run=false`.
 - Keep the before report: it records the previous target values should a
   change need to be reverted.
 - A standalone read-only diff generator for the same CSV lives in

@@ -5,10 +5,12 @@ package reposcmd
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 
 	"jfrogpscli/internal/config"
+	"jfrogpscli/internal/jfclient"
 	"jfrogpscli/internal/output"
 	"jfrogpscli/internal/progress"
 	"jfrogpscli/internal/registry"
@@ -500,6 +502,12 @@ func runResolveMergeDiff(args []string) int {
 		output.DryRunBanner(os.Stdout, fmt.Sprintf("update %d repositories on target", len(pending)))
 		return 0
 	}
+
+	// The only write this subcommand performs is one partial update per repo.
+	// It is exempted from the release-build write guard here -- after the
+	// --dry-run check, so only when the user asked to apply -- and nothing
+	// else (PUT/PATCH/DELETE, other POSTs) is.
+	jfclient.AllowWrite(http.MethodPost, "/artifactory/api/repositories/")
 
 	failed := 0
 	results := repos.ApplyMergeDiffs(target, before, false, func(done, total int) { bar.Update("Updating repos", done, total) })

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strings"
 
 	"jfrogpscli/internal/jfclient"
 	"jfrogpscli/internal/registry"
@@ -41,6 +42,36 @@ var version = "dev"
 // it from help output and refuses to run it until it earns a spot here.
 var stableCommands = map[string]bool{
 	"discover": true,
+}
+
+// stableSubcommands promotes individual subcommands of a command group that
+// is otherwise dev-build-only: a tagged binary runs (and lists) only the
+// subcommands named here for that group, and refuses the rest. A group in
+// stableCommands is fully available and needs no entry here. A promoted
+// subcommand that writes must also opt its endpoint out of the release write
+// guard (see jfclient.AllowWrite); promotion alone does not enable writes.
+var stableSubcommands = map[string]map[string]bool{
+	"repos": {"resolve-merge-diff": true},
+}
+
+func isStable(group string, args []string) (ok bool, partial bool) {
+	if stableCommands[group] {
+		return true, false
+	}
+	subs, has := stableSubcommands[group]
+	if !has {
+		return false, false
+	}
+	return len(args) > 0 && subs[args[0]], true
+}
+
+func releasedSubcommands(group string) []string {
+	var out []string
+	for s := range stableSubcommands[group] {
+		out = append(out, s)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func isDevBuild() bool {
@@ -83,10 +114,31 @@ func run(args []string) int {
 		printUsage()
 		return 1
 	}
-	if !isDevBuild() && !stableCommands[args[0]] {
-		fmt.Fprintf(os.Stderr, "jfps: %q is not available in this release yet (still under test)\n\n", args[0])
-		printUsage()
-		return 1
+	if !isDevBuild() {
+		ok, partial := isStable(args[0], args[1:])
+		if !ok && partial {
+			// Group-level help, or a subcommand that has not been promoted.
+			help := len(args) == 1 || args[1] == "-h" || args[1] == "--help" || args[1] == "help"
+			w := os.Stderr
+			if help {
+				fmt.Fprintf(w, "jfps %s: only these subcommands are available in this release:\n", args[0])
+			} else {
+				fmt.Fprintf(w, "jfps: \"%s %s\" is not available in this release yet (still under test). Available:\n", args[0], args[1])
+			}
+			for _, sub := range releasedSubcommands(args[0]) {
+				fmt.Fprintf(w, "  jfps %s %s\n", args[0], sub)
+			}
+			fmt.Fprintln(w, "\nRun 'jfps "+args[0]+" <subcommand> -h' for flags.")
+			if help {
+				return 0
+			}
+			return 1
+		}
+		if !ok {
+			fmt.Fprintf(os.Stderr, "jfps: %q is not available in this release yet (still under test)\n\n", args[0])
+			printUsage()
+			return 1
+		}
 	}
 	return fn(args[1:])
 }
@@ -101,7 +153,7 @@ func printUsage() {
 	if !isDevBuild() {
 		visible := names[:0]
 		for _, name := range names {
-			if stableCommands[name] {
+			if stableCommands[name] || len(stableSubcommands[name]) > 0 {
 				visible = append(visible, name)
 			}
 		}
@@ -109,7 +161,11 @@ func printUsage() {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		fmt.Fprintf(os.Stderr, "  %-14s %s\n", name, registry.Help(name))
+		help := registry.Help(name)
+		if !isDevBuild() && !stableCommands[name] {
+			help = "Released subcommands only: " + strings.Join(releasedSubcommands(name), ", ")
+		}
+		fmt.Fprintf(os.Stderr, "  %-14s %s\n", name, help)
 	}
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run 'jfps <command>' with no subcommand, or 'jfps <command> <subcommand> -h', for details.")
